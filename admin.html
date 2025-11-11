@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin - ES Dynamic Rentals</title>
+    <link rel="stylesheet" href="styles.css">
+    <style>
+        .admin-container {
+            max-width: 1200px;
+            margin: 40px auto;
+            padding: 20px;
+        }
+        .admin-section {
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 5px 20px rgba(0, 0, 0, 0.1);
+            margin-bottom: 30px;
+        }
+        .admin-section h2 {
+            color: #667eea;
+            margin-bottom: 20px;
+        }
+        .car-list {
+            display: grid;
+            gap: 20px;
+        }
+        .car-item {
+            border: 2px solid #e0e0e0;
+            padding: 20px;
+            border-radius: 10px;
+            display: grid;
+            grid-template-columns: 1fr 2fr 1fr;
+            gap: 20px;
+            align-items: center;
+        }
+        .car-item img {
+            width: 100%;
+            max-width: 200px;
+            height: 150px;
+            object-fit: cover;
+            border-radius: 8px;
+        }
+        .car-info h3 {
+            margin: 0 0 10px 0;
+            color: #333;
+        }
+        .car-info p {
+            margin: 5px 0;
+            color: #666;
+        }
+        .availability-controls {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .availability-controls input {
+            padding: 8px;
+            border: 2px solid #e0e0e0;
+            border-radius: 5px;
+            width: 100%;
+        }
+        .availability-controls button {
+            padding: 10px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .availability-controls button:hover {
+            background: #764ba2;
+        }
+        .image-upload {
+            margin-top: 15px;
+        }
+        .image-upload input[type="file"] {
+            margin-bottom: 10px;
+        }
+        .image-upload button {
+            padding: 8px 15px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+        .image-upload button:hover {
+            background: #764ba2;
+        }
+        .uploaded-images {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 15px;
+        }
+        .uploaded-images img {
+            width: 100px;
+            height: 70px;
+            object-fit: cover;
+            border-radius: 5px;
+            border: 2px solid #e0e0e0;
+        }
+        .status-message {
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+            display: none;
+        }
+        .status-message.success {
+            background: #d4edda;
+            color: #155724;
+            display: block;
+        }
+        .status-message.error {
+            background: #f8d7da;
+            color: #721c24;
+            display: block;
+        }
+        .back-link {
+            display: inline-block;
+            margin-bottom: 20px;
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 500;
+        }
+        .back-link:hover {
+            color: #764ba2;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div class="container">
+            <nav class="navbar">
+                <a href="index.html" class="logo">
+                    <h1>ES DYNAMIC RENTALS - ADMIN</h1>
+                </a>
+                <div class="nav-links">
+                    <a href="index.html">View Website</a>
+                </div>
+            </nav>
+        </div>
+    </header>
+
+    <main class="container">
+        <div class="admin-container">
+            <a href="index.html" class="back-link">← Back to Website</a>
+            
+            <div class="admin-section">
+                <h2>Car Inventory Management</h2>
+                <div id="carsList" class="car-list">
+                    <p>Loading cars...</p>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <footer>
+        <div class="container">
+            <p>&copy; 2025 ES Dynamic Rentals. All rights reserved.</p>
+        </div>
+    </footer>
+
+    <script>
+        const API_BASE_URL = 'http://localhost:3000/api';
+
+        async function loadCars() {
+            try {
+                const response = await fetch(`${API_BASE_URL}/cars`);
+                if (!response.ok) throw new Error('Failed to load cars');
+                const cars = await response.json();
+                renderCars(cars);
+            } catch (error) {
+                console.error('Error loading cars:', error);
+                document.getElementById('carsList').innerHTML = 
+                    '<p style="color: red;">Failed to load cars. Make sure the server is running.</p>';
+            }
+        }
+
+        function renderCars(cars) {
+            const carsList = document.getElementById('carsList');
+            if (cars.length === 0) {
+                carsList.innerHTML = '<p>No cars in inventory.</p>';
+                return;
+            }
+
+            carsList.innerHTML = cars.map(car => `
+                <div class="car-item" id="car-${car.id}">
+                    <div>
+                        <img src="${car.image || '/images/placeholder.jpg'}" alt="${car.name}" onerror="this.src='/images/placeholder.jpg'">
+                    </div>
+                    <div class="car-info">
+                        <h3>${car.name}</h3>
+                        <p><strong>Price:</strong> ${car.price}</p>
+                        <p><strong>Year:</strong> ${car.year} | <strong>Seats:</strong> ${car.seats} | <strong>Transmission:</strong> ${car.transmission}</p>
+                        <p><strong>Availability:</strong> <span style="color: ${car.availability === 'available' ? 'green' : car.availability === 'limited' ? 'orange' : 'red'}">${car.availability}</span></p>
+                        <div class="image-upload">
+                            <input type="file" id="images-${car.id}" multiple accept="image/*" onchange="handleImageSelect(${car.id})">
+                            <button onclick="uploadImages(${car.id})">Upload Images</button>
+                            <div id="status-${car.id}" class="status-message"></div>
+                            ${car.images && car.images.length > 0 ? `
+                                <div class="uploaded-images">
+                                    ${car.images.map(img => `<img src="${img}" alt="Car image">`).join('')}
+                                </div>
+                            ` : ''}
+                        </div>
+                    </div>
+                    <div class="availability-controls">
+                        <label>
+                            <strong>Available:</strong>
+                            <input type="number" id="available-${car.id}" value="${car.available || 0}" min="0" max="${car.quantity || 0}">
+                        </label>
+                        <label>
+                            <strong>Total Quantity:</strong>
+                            <input type="number" id="quantity-${car.id}" value="${car.quantity || 0}" min="0">
+                        </label>
+                        <button onclick="updateAvailability(${car.id})">Update Availability</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        let selectedFiles = {};
+
+        function handleImageSelect(carId) {
+            const input = document.getElementById(`images-${carId}`);
+            selectedFiles[carId] = Array.from(input.files);
+        }
+
+        async function uploadImages(carId) {
+            if (!selectedFiles[carId] || selectedFiles[carId].length === 0) {
+                showStatus(carId, 'Please select images to upload', 'error');
+                return;
+            }
+
+            const formData = new FormData();
+            selectedFiles[carId].forEach(file => {
+                formData.append('images', file);
+            });
+
+            const statusEl = document.getElementById(`status-${carId}`);
+            statusEl.className = 'status-message';
+            statusEl.textContent = 'Uploading...';
+            statusEl.style.display = 'block';
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/cars/${carId}/images`, {
+                    method: 'POST',
+                    body: formData
+                    // Don't set Content-Type header - browser will set it automatically with boundary
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Upload failed');
+                }
+
+                showStatus(carId, 'Images uploaded successfully!', 'success');
+                selectedFiles[carId] = [];
+                document.getElementById(`images-${carId}`).value = '';
+                
+                // Reload cars to show new images
+                setTimeout(() => loadCars(), 1000);
+            } catch (error) {
+                showStatus(carId, `Upload failed: ${error.message}`, 'error');
+            }
+        }
+
+        async function updateAvailability(carId) {
+            const available = parseInt(document.getElementById(`available-${carId}`).value);
+            const quantity = parseInt(document.getElementById(`quantity-${carId}`).value);
+
+            if (isNaN(available) || isNaN(quantity) || available < 0 || quantity < 0) {
+                showStatus(carId, 'Please enter valid numbers', 'error');
+                return;
+            }
+
+            if (available > quantity) {
+                showStatus(carId, 'Available cannot exceed total quantity', 'error');
+                return;
+            }
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/cars/${carId}/availability`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ available, quantity })
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Update failed');
+                }
+
+                showStatus(carId, 'Availability updated successfully!', 'success');
+                setTimeout(() => loadCars(), 1000);
+            } catch (error) {
+                showStatus(carId, `Update failed: ${error.message}`, 'error');
+            }
+        }
+
+        function showStatus(carId, message, type) {
+            const statusEl = document.getElementById(`status-${carId}`);
+            statusEl.textContent = message;
+            statusEl.className = `status-message ${type}`;
+            statusEl.style.display = 'block';
+
+            if (type === 'success') {
+                setTimeout(() => {
+                    statusEl.style.display = 'none';
+                }, 3000);
+            }
+        }
+
+        // Load cars on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            loadCars();
+        });
+    </script>
+</body>
+</html>
+
