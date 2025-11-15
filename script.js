@@ -1,26 +1,34 @@
-// API base URL - change this if your backend is on a different port
-const API_BASE_URL = 'http://localhost:3000/api';
-
-// Stripe - Initialize with your publishable key
-// Get this from: https://dashboard.stripe.com/apikeys
-// Replace 'pk_test_51Q...' with your actual Stripe Publishable Key
-let stripe = null;
-let elements = null;
-let cardElement = null;
-let paymentIntentClientSecret = null;
-let currentPaymentIntentId = null;
-
-// Initialize Stripe if available
-try {
-    if (typeof Stripe !== 'undefined') {
-        // Replace this with your actual publishable key from Stripe Dashboard
-        const publishableKey = 'pk_test_51Q...'; // TODO: Replace with your key
-        if (publishableKey && publishableKey !== 'pk_test_51Q...') {
-            stripe = Stripe(publishableKey);
-        }
+// Dynamically determine API base URL based on current page location
+const API_BASE_URL = (() => {
+    // If accessing via file:// protocol, default to localhost
+    if (window.location.protocol === 'file:') {
+        return 'http://localhost:3000/api';
     }
-} catch (error) {
-    console.warn('Stripe not initialized:', error);
+    // Otherwise use the same origin
+    return `${window.location.protocol}//${window.location.host}/api`;
+})();
+
+console.log('API Base URL:', API_BASE_URL);
+
+// Sanitize HTML to prevent XSS
+function sanitizeHTML(str) {
+    if (!str) return '';
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
+// Escape HTML for use in attributes
+function escapeHtml(str) {
+    if (!str) return '';
+    const map = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+    };
+    return str.toString().replace(/[&<>"']/g, m => map[m]);
 }
 
 // Car data - will be loaded from API
@@ -34,23 +42,53 @@ let currentGalleryImage = 0;
 // Load cars from API
 async function loadCars() {
     try {
+        console.log('Loading cars from:', `${API_BASE_URL}/cars`);
         const response = await fetch(`${API_BASE_URL}/cars`);
-        if (!response.ok) throw new Error('Failed to load cars');
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
         cars = await response.json();
+        console.log(`Loaded ${cars.length} cars`);
         
         // Initialize UI after loading cars
-        if (currentPage === 'home') {
+        // Always initialize slideshow if on home page, or if no page is set yet
+        if (currentPage === 'home' || currentPage === '') {
             initSlideshow();
             startAutoSlide();
         } else if (currentPage === 'cars') {
             renderCarsListing();
         }
+        
+        // If cars page is active, render it
+        const carsPage = document.getElementById('carsPage');
+        if (carsPage && carsPage.classList.contains('active')) {
+            renderCarsListing();
+        }
     } catch (error) {
         console.error('Error loading cars:', error);
-        // Fallback: show error message
+        // Show detailed error message
+        const errorMsg = error.message || 'Unknown error';
         const carsGrid = document.getElementById('carsGrid');
         if (carsGrid) {
-            carsGrid.innerHTML = '<p style="text-align: center; color: red; padding: 40px;">Failed to load cars. Please make sure the server is running.</p>';
+            carsGrid.innerHTML = `
+                <div style="text-align: center; color: red; padding: 40px;">
+                    <p><strong>Failed to load cars</strong></p>
+                    <p>${errorMsg}</p>
+                    <p style="font-size: 0.9em; margin-top: 10px;">Make sure the server is running on ${API_BASE_URL.replace('/api', '')}</p>
+                </div>
+            `;
+        }
+        // Also show in slideshow area if on home page
+        const slidesWrapper = document.getElementById('slidesWrapper');
+        if (slidesWrapper) {
+            slidesWrapper.innerHTML = `
+                <div style="text-align: center; color: red; padding: 40px;">
+                    <p><strong>Failed to load cars</strong></p>
+                    <p>${errorMsg}</p>
+                </div>
+            `;
         }
     }
 }
@@ -83,7 +121,13 @@ function navigateTo(page, carId = null) {
             
             // Initialize page-specific content
             if (page === 'cars') {
-                renderCarsListing();
+                // Always render cars listing when navigating to cars page
+                if (cars.length > 0) {
+                    renderCarsListing();
+                } else {
+                    // If cars not loaded yet, load them first
+                    loadCars();
+                }
             } else if (page === 'home') {
                 // Restart auto-slide when returning to home
                 if (cars.length > 0) {
@@ -126,25 +170,34 @@ function renderCarsListing() {
         const imageSrc = car.image || '/images/placeholder.jpg';
         
         carCard.innerHTML = `
-            <img src="${imageSrc}" alt="${car.name}" class="car-card-image" loading="lazy" onerror="this.src='/images/placeholder.jpg'">
+            <img src="${escapeHtml(imageSrc)}" alt="${escapeHtml(car.name || '')}" class="car-card-image" loading="lazy" onerror="this.src='/images/placeholder.jpg'">
             <div class="car-card-content">
                 <div class="car-card-header">
-                    <h3 class="car-card-name">${car.name}</h3>
-                    <span class="availability-badge ${availabilityClass}">${availabilityText[availabilityClass]}</span>
+                    <h3 class="car-card-name">${sanitizeHTML(car.name || '')}</h3>
+                    <span class="availability-badge ${availabilityClass}">${sanitizeHTML(availabilityText[availabilityClass] || '')}</span>
                 </div>
-                <div class="car-card-price">${car.price}</div>
+                <div class="car-card-price">${sanitizeHTML(car.price || 'Price not available')}</div>
                 <div class="car-card-specs">
-                    <span>📅 ${car.year}</span>
-                    <span>👥 ${car.seats} Seats</span>
-                    <span>⚙️ ${car.transmission}</span>
-                    <span>⛽ ${car.fuel}</span>
-                    <span>📏 ${car.trim}</span>
+                    <span>📅 ${sanitizeHTML(car.year || 'N/A')}</span>
+                    <span>👥 ${sanitizeHTML(car.seats || 'N/A')} Seats</span>
+                    <span>⚙️ ${sanitizeHTML(car.transmission || 'N/A')}</span>
+                    <span>⛽ ${sanitizeHTML(car.fuel || 'N/A')}</span>
+                    <span>📏 ${sanitizeHTML(car.trim || 'N/A')}</span>
                 </div>
-                <button class="car-card-button" ${car.availability === 'unavailable' ? 'disabled' : ''} onclick="viewCarFromListing(${car.id})">
-                    ${car.availability === 'unavailable' ? 'Not Available' : 'View Details'}
+                <button class="car-card-button" ${car.availability === 'unavailable' ? 'disabled' : ''} data-car-id="${car.id}">
+                    ${sanitizeHTML(car.availability === 'unavailable' ? 'Not Available' : 'View Details')}
                 </button>
             </div>
         `;
+        
+        // Add event listener to the button
+        const carButton = carCard.querySelector('.car-card-button');
+        if (carButton && !carButton.disabled) {
+            carButton.addEventListener('click', () => {
+                const carId = parseInt(carButton.getAttribute('data-car-id'));
+                viewCarFromListing(carId);
+            });
+        }
         
         carsGrid.appendChild(carCard);
     });
@@ -187,8 +240,8 @@ function initSlideshow() {
         const overlay = document.createElement('div');
         overlay.className = 'slide-overlay';
         overlay.innerHTML = `
-            <h3>${car.name}</h3>
-            <p>${car.price}</p>
+            <h3>${sanitizeHTML(car.name || '')}</h3>
+            <p>${sanitizeHTML(car.price || '')}</p>
         `;
         
         slide.appendChild(img);
@@ -230,42 +283,51 @@ function showCarDetails(carId) {
     detailsGrid.innerHTML = `
         <div class="detail-item">
             <strong>Daily Rate</strong>
-            <span>${car.price}</span>
+            <span>${sanitizeHTML(car.price || 'N/A')}</span>
         </div>
         <div class="detail-item">
             <strong>Year</strong>
-            <span>${car.year}</span>
+            <span>${sanitizeHTML(car.year || 'N/A')}</span>
         </div>
          <div class="detail-item" style="grid-column: 1 / -1;">
             <strong>Trim</strong>
-            <span>${car.trim}</span>
+            <span>${sanitizeHTML(car.trim || 'N/A')}</span>
         </div>
         <div class="detail-item">
             <strong>Seats</strong>
-            <span>${car.seats}</span>
+            <span>${sanitizeHTML(car.seats || 'N/A')}</span>
         </div>
         <div class="detail-item">
             <strong>Transmission</strong>
-            <span>${car.transmission}</span>
+            <span>${sanitizeHTML(car.transmission || 'N/A')}</span>
         </div>
         <div class="detail-item">
             <strong>Fuel Type</strong>
-            <span>${car.fuel}</span>
+            <span>${sanitizeHTML(car.fuel || 'N/A')}</span>
         </div>
         <div class="detail-item">
             <strong>Mileage</strong>
-            <span>${car.mileage}</span>
+            <span>${sanitizeHTML(car.mileage || 'N/A')}</span>
         </div>
          <div class="detail-item">
             <strong>Color</strong>
-            <span>${car.color}</span>
+            <span>${sanitizeHTML(car.color || 'N/A')}</span>
         </div>
         <div class="detail-item" style="grid-column: 1 / -1;">
             <strong>Features</strong>
-            <span>${car.features}</span>
+            <span>${sanitizeHTML(car.features || 'N/A')}</span>
         </div>
-        <button class="rent-button" onclick="navigateToCarDetail(${car.id})">View Details & Book</button>
+        <button class="rent-button" id="homeRentButton" data-car-id="${car.id}">View Details & Book</button>
     `;
+    
+    // Add event listener to the rent button
+    const rentButton = document.getElementById('homeRentButton');
+    if (rentButton) {
+        rentButton.addEventListener('click', () => {
+            const carId = parseInt(rentButton.getAttribute('data-car-id'));
+            navigateToCarDetail(carId);
+        });
+    }
     
     // Don't auto-scroll - let user scroll manually if they want to see details
     // Removed auto-scroll to prevent page jumping when slides change
@@ -280,8 +342,11 @@ function navigateToCarDetail(carId) {
 async function renderCarDetailPage(carId) {
     try {
         // Fetch latest car data from API
+        console.log('Loading car details from:', `${API_BASE_URL}/cars/${carId}`);
         const response = await fetch(`${API_BASE_URL}/cars/${carId}`);
-        if (!response.ok) throw new Error('Failed to load car details');
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: Failed to load car details`);
+        }
         const car = await response.json();
         
         // Update local cars array
@@ -293,13 +358,21 @@ async function renderCarDetailPage(carId) {
         currentCarDetailId = carId;
         currentGalleryImage = 0;
         
-        const carImages = car.images && car.images.length > 0 ? car.images : [car.image || '/images/placeholder.jpg'];
+        // Handle images - ensure they have proper paths
+        let carImages = [];
+        if (car.images && car.images.length > 0) {
+            carImages = car.images.map(img => img.startsWith('/images/') ? img : `/images/${img}`);
+        } else if (car.image) {
+            carImages = [car.image.startsWith('/images/') ? car.image : `/images/${car.image}`];
+        } else {
+            carImages = ['/images/placeholder.jpg'];
+        }
         
         // Set main image
         const mainImage = document.getElementById('mainCarImage');
         if (mainImage) {
             mainImage.src = carImages[0];
-            mainImage.alt = car.name;
+            mainImage.alt = car.name || 'Car Image';
             mainImage.onerror = function() { this.src = '/images/placeholder.jpg'; };
         }
         
@@ -321,46 +394,46 @@ async function renderCarDetailPage(carId) {
         // Set car name
         const detailCarName = document.getElementById('detailCarName');
         if (detailCarName) {
-            detailCarName.textContent = car.name;
+            detailCarName.textContent = car.name || 'Car Details';
         }
         
         // Set booking price
         const bookingPrice = document.getElementById('bookingPrice');
         if (bookingPrice) {
-            bookingPrice.textContent = car.price;
+            bookingPrice.textContent = car.price || 'Price not available';
         }
         
-        // Render car specs
+        // Render car specs with fallbacks for undefined values
         const detailSpecsGrid = document.getElementById('detailSpecsGrid');
         if (detailSpecsGrid) {
             detailSpecsGrid.innerHTML = `
                 <div class="spec-item">
                     <strong>Daily Rate</strong>
-                    <span>${car.price}</span>
+                    <span>${sanitizeHTML(car.price || 'N/A')}</span>
                 </div>
                 <div class="spec-item">
                     <strong>Year</strong>
-                    <span>${car.year}</span>
+                    <span>${sanitizeHTML(car.year || 'N/A')}</span>
                 </div>
                 <div class="spec-item">
                     <strong>Seats</strong>
-                    <span>${car.seats}</span>
+                    <span>${sanitizeHTML(car.seats || 'N/A')}</span>
                 </div>
                 <div class="spec-item">
                     <strong>Transmission</strong>
-                    <span>${car.transmission}</span>
+                    <span>${sanitizeHTML(car.transmission || 'N/A')}</span>
                 </div>
                 <div class="spec-item">
                     <strong>Fuel Type</strong>
-                    <span>${car.fuel}</span>
+                    <span>${sanitizeHTML(car.fuel || 'N/A')}</span>
                 </div>
                 <div class="spec-item">
                     <strong>Mileage</strong>
-                    <span>${car.mileage}</span>
+                    <span>${sanitizeHTML(car.mileage || 'N/A')}</span>
                 </div>
                 <div class="spec-item full-width">
                     <strong>Features</strong>
-                    <span>${car.features}</span>
+                    <span>${sanitizeHTML(car.features || 'N/A')}</span>
                 </div>
             `;
         }
@@ -375,20 +448,10 @@ async function renderCarDetailPage(carId) {
                 if (returnDate) {
                     returnDate.min = this.value;
                 }
-                // Initialize payment when both dates are selected
-                if (pickupDate.value && returnDate.value) {
-                    initializePaymentForm(car.id, pickupDate.value, returnDate.value);
-                }
             });
         }
         if (returnDate) {
             returnDate.min = today;
-            returnDate.addEventListener('change', function() {
-                // Initialize payment when both dates are selected
-                if (pickupDate && pickupDate.value && returnDate.value) {
-                    initializePaymentForm(car.id, pickupDate.value, returnDate.value);
-                }
-            });
         }
         
         // Disable booking if unavailable
@@ -400,7 +463,7 @@ async function renderCarDetailPage(carId) {
                 bookingSubmitBtn.style.background = '#ccc';
             } else {
                 bookingSubmitBtn.disabled = false;
-                bookingSubmitBtn.textContent = 'Complete Booking';
+                bookingSubmitBtn.textContent = 'Reserve Vehicle';
                 bookingSubmitBtn.style.background = '';
             }
         }
@@ -449,97 +512,6 @@ function prevGalleryImage() {
     changeGalleryImage(prevIndex);
 }
 
-// Initialize Stripe payment form
-async function initializePaymentForm(carId, pickupDate, returnDate) {
-    try {
-        if (!stripe) {
-            console.warn('Stripe is not configured. Payment will be skipped.');
-            return;
-        }
-
-        // Create payment intent
-        const response = await fetch(`${API_BASE_URL}/create-payment-intent`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                carId,
-                pickupDate,
-                returnDate
-            })
-        });
-
-        const data = await response.json();
-        
-        if (!response.ok) {
-            // If Stripe is not configured on server, allow booking without payment
-            if (data.error && data.error.includes('Stripe is not configured')) {
-                console.warn('Stripe not configured on server. Booking will proceed without payment.');
-                return;
-            }
-            throw new Error(data.error || 'Failed to initialize payment');
-        }
-
-        paymentIntentClientSecret = data.clientSecret;
-        
-        // Extract payment intent ID from client secret
-        const parts = paymentIntentClientSecret.split('_secret_');
-        if (parts.length > 0) {
-            currentPaymentIntentId = parts[0].replace('pi_', 'pi_');
-        }
-
-        // Initialize Stripe Elements
-        if (!elements) {
-            elements = stripe.elements();
-        }
-
-        // Create card element
-        if (cardElement) {
-            cardElement.unmount();
-        }
-        
-        cardElement = elements.create('card', {
-            style: {
-                base: {
-                    fontSize: '16px',
-                    color: '#32325d',
-                    '::placeholder': {
-                        color: '#aab7c4',
-                    },
-                },
-                invalid: {
-                    color: '#fa755a',
-                },
-            },
-        });
-
-        cardElement.mount('#cardElement');
-        
-        // Handle real-time validation errors
-        cardElement.on('change', ({error}) => {
-            const displayError = document.getElementById('cardErrors');
-            if (error) {
-                displayError.textContent = error.message;
-            } else {
-                displayError.textContent = '';
-            }
-        });
-
-        // Show payment section with animation
-        const paymentSection = document.getElementById('paymentSection');
-        if (paymentSection) {
-            paymentSection.style.display = 'block';
-            paymentSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        }
-        
-    } catch (error) {
-        console.error('Payment initialization error:', error);
-        // Don't block booking if payment initialization fails
-        console.warn('Continuing without payment form');
-    }
-}
-
 // Handle booking form submission
 async function handleBookingForm(event) {
     event.preventDefault();
@@ -576,34 +548,10 @@ async function handleBookingForm(event) {
     const bookingSubmitBtn = document.getElementById('bookingSubmitBtn');
     const originalText = bookingSubmitBtn.textContent;
     bookingSubmitBtn.disabled = true;
-    bookingSubmitBtn.textContent = 'Processing Payment...';
+    bookingSubmitBtn.textContent = 'Processing Booking...';
     
     try {
-        // Process payment first (if Stripe is configured)
-        let paymentIntentId = null;
-        
-        if (stripe && paymentIntentClientSecret && cardElement) {
-            const {error, paymentIntent} = await stripe.confirmCardPayment(paymentIntentClientSecret, {
-                payment_method: {
-                    card: cardElement,
-                    billing_details: {
-                        name: `${firstName} ${lastName}`,
-                        email: email,
-                        phone: phone,
-                    },
-                },
-            });
-
-            if (error) {
-                throw new Error(error.message || 'Payment failed');
-            }
-
-            paymentIntentId = paymentIntent.id;
-        }
-        
-        // Create booking after payment
-        bookingSubmitBtn.textContent = 'Confirming Booking...';
-        
+        // Create booking
         const response = await fetch(`${API_BASE_URL}/bookings`, {
             method: 'POST',
             headers: {
@@ -618,8 +566,7 @@ async function handleBookingForm(event) {
                 pickupDate,
                 returnDate,
                 pickupLocation,
-                additionalInfo,
-                paymentIntentId
+                additionalInfo
             })
         });
         
@@ -638,17 +585,10 @@ async function handleBookingForm(event) {
         }
         
         // Show success message
-        alert(`✅ Booking Confirmed!\n\nBooking ID: ${data.booking.bookingId}\nCustomer: ${firstName} ${lastName}\nCar: ${data.booking.carName}\nRental Period: ${data.booking.days} day(s)\nTotal Price: $${data.booking.total.toFixed(2)}\n\n${data.message}\n\nThank you for choosing ES Dynamic Rentals!`);
+        alert(`✅ Reservation Confirmed!\n\nBooking ID: ${data.booking.bookingId}\nCustomer: ${firstName} ${lastName}\nCar: ${data.booking.carName}\nRental Period: ${data.booking.days} day(s)\nTotal Price: $${data.booking.total.toFixed(2)}\n\n${data.message}\n\n⚠️ IMPORTANT: Please complete your booking by paying at our location:\n1460 South Canton Avenue, Tulsa, Oklahoma 74137\n\nPayment is required at pickup. Please bring a valid ID and payment method.\n\nThank you for choosing ES Dynamic Rentals!`);
         
         // Reset form
         document.getElementById('bookingForm').reset();
-        document.getElementById('paymentSection').style.display = 'none';
-        if (cardElement) {
-            cardElement.unmount();
-            cardElement = null;
-        }
-        paymentIntentClientSecret = null;
-        currentPaymentIntentId = null;
         
         // Navigate back to home
         navigateTo('home');
@@ -786,9 +726,6 @@ function handleContactForm(event) {
 
 // Initialize when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
-    // Load cars from API
-    loadCars();
-    
     // Add event listeners to navigation buttons
     const prevBtn = document.getElementById('prevBtn');
     const nextBtn = document.getElementById('nextBtn');
@@ -834,8 +771,70 @@ document.addEventListener('DOMContentLoaded', () => {
         galleryNext.addEventListener('click', nextGalleryImage);
     }
     
-    // Initialize to home page
-    navigateTo('home');
+    // Navigation event listeners (replace inline onclick handlers)
+    const homeLink = document.getElementById('homeLink');
+    const carsLink = document.getElementById('carsLink');
+    const contactLink = document.getElementById('contactLink');
+    const backToHomeBtn = document.getElementById('backToHomeBtn');
+    const termsLink = document.getElementById('termsLink');
+    const closeTermsModalBtn = document.getElementById('closeTermsModalBtn');
+    const closeTermsModalBtn2 = document.getElementById('closeTermsModalBtn2');
+
+    if (homeLink) {
+        homeLink.addEventListener('click', (e) => {
+            e.preventDefault();
+            navigateTo('home');
+        });
+    }
+
+    if (carsLink) {
+        carsLink.addEventListener('click', (e) => {
+            e.preventDefault();
+            navigateTo('cars');
+        });
+    }
+
+    if (contactLink) {
+        contactLink.addEventListener('click', (e) => {
+            e.preventDefault();
+            navigateTo('contact');
+        });
+    }
+
+    if (backToHomeBtn) {
+        backToHomeBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            navigateTo('home');
+        });
+    }
+
+    if (termsLink) {
+        termsLink.addEventListener('click', (e) => {
+            e.preventDefault();
+            showTermsModal();
+        });
+    }
+
+    if (closeTermsModalBtn) {
+        closeTermsModalBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            closeTermsModal();
+        });
+    }
+
+    if (closeTermsModalBtn2) {
+        closeTermsModalBtn2.addEventListener('click', (e) => {
+            e.preventDefault();
+            closeTermsModal();
+        });
+    }
+    
+    // Load cars first, then initialize to home page
+    // loadCars() will call initSlideshow() when cars are loaded
+    loadCars().then(() => {
+        // Initialize to home page after cars are loaded
+        navigateTo('home');
+    });
 });
 
 // Keyboard navigation

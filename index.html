@@ -4,18 +4,18 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ES Dynamic Rentals</title>
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="styles.css?v=2">
 </head>
 <body>
     <header>
         <div class="container">
             <nav class="navbar">
-                <a href="#" class="logo" onclick="navigateTo('home'); return false;">
+                <a href="#" class="logo" id="homeLink">
                     <h1>ES DYNAMIC RENTALS</h1>
                 </a>
                 <div class="nav-links">
-                    <a href="#" onclick="navigateTo('cars'); return false;">Cars</a>
-                    <a href="#" onclick="navigateTo('contact'); return false;">Contact Us</a>
+                    <a href="#" id="carsLink">Cars</a>
+                    <a href="#" id="contactLink">Contact Us</a>
                 </div>
             </nav>
         </div>
@@ -118,7 +118,7 @@
 
         <!-- Car Detail Page -->
         <div id="carDetailPage" class="page">
-            <button class="back-button" onclick="navigateTo('home')">← Back to Home</button>
+            <button class="back-button" id="backToHomeBtn">← Back to Home</button>
             <div class="car-detail-container">
                 <div class="car-detail-left">
                     <!-- Image Gallery -->
@@ -145,8 +145,16 @@
                 <!-- Booking Form -->
                 <div class="booking-section">
                     <div class="booking-card">
-                        <h3>Book This Car</h3>
+                        <h3>Reserve This Car</h3>
                         <div class="booking-price" id="bookingPrice"></div>
+                        <div style="background: #fff3cd; border: 2px solid #ffc107; border-radius: 8px; padding: 15px; margin-bottom: 20px;">
+                            <p style="margin: 0; color: #856404; font-weight: 600; font-size: 0.95rem;">
+                                ⚠️ Payment Required at Pickup
+                            </p>
+                            <p style="margin: 8px 0 0 0; color: #856404; font-size: 0.9rem;">
+                                This reservation holds the vehicle for you. Payment must be completed at our location when you pick up the vehicle. Please bring a valid ID and payment method.
+                            </p>
+                        </div>
                         <form class="booking-form" id="bookingForm">
                             <div class="form-row">
                                 <div class="form-group">
@@ -191,30 +199,11 @@
                             <div class="terms-section">
                                 <label class="terms-checkbox-label">
                                     <input type="checkbox" id="termsCheckbox" name="terms" required>
-                                    <span>I have read and agree to the <a href="#" class="terms-link" onclick="showTermsModal(); return false;">Terms and Conditions</a> *</span>
+                                    <span>I have read and agree to the <a href="#" class="terms-link" id="termsLink">Terms and Conditions</a> *</span>
                                 </label>
                             </div>
                             
-                            <!-- Payment Section -->
-                            <div id="paymentSection" style="display: none;">
-                                <div class="form-group">
-                                    <label style="font-weight: 600; color: #667eea; margin-bottom: 10px; display: block;">
-                                        💳 Payment Information *
-                                    </label>
-                                    <p style="font-size: 0.9rem; color: #666; margin-bottom: 10px;">
-                                        Enter your card details below to complete your booking.
-                                    </p>
-                                    <div id="cardElement" style="padding: 12px; border: 2px solid #e0e0e0; border-radius: 8px; margin-top: 8px; background: white;">
-                                        <!-- Stripe Elements will create form elements here -->
-                                    </div>
-                                    <div id="cardErrors" role="alert" style="color: #dc3545; margin-top: 8px; font-size: 0.9rem;"></div>
-                                    <p style="font-size: 0.85rem; color: #999; margin-top: 8px;">
-                                        🔒 Your payment is secure and encrypted
-                                    </p>
-                                </div>
-                            </div>
-                            
-                            <button type="submit" class="booking-submit-button" id="bookingSubmitBtn">Complete Booking</button>
+                            <button type="submit" class="booking-submit-button" id="bookingSubmitBtn">Reserve Vehicle</button>
                         </form>
                     </div>
                 </div>
@@ -226,7 +215,7 @@
             <div class="modal-content">
                 <div class="modal-header">
                     <h2>Terms and Conditions</h2>
-                    <button class="modal-close" onclick="closeTermsModal()">&times;</button>
+                    <button class="modal-close" id="closeTermsModalBtn">&times;</button>
                 </div>
                 <div class="modal-body">
                     <h3>1. Rental Agreement</h3>
@@ -236,7 +225,7 @@
                     <p>You must be at least 25 years old and hold a valid driver's license. The license must be valid for the entire rental period. We reserve the right to verify your driving record and may refuse rental based on driving history.</p>
                     
                     <h3>3. Payment and Fees</h3>
-                    <p>Payment is required at the time of booking. We accept major credit cards and debit cards. Additional fees may apply for late returns, fuel charges, cleaning fees, or damages. A security deposit will be held on your card until the vehicle is returned in satisfactory condition.</p>
+                    <p>Payment will be processed upon vehicle pickup. We accept major credit cards and debit cards. Additional fees may apply for late returns, fuel charges, cleaning fees, or damages. A security deposit may be required at the time of pickup.</p>
                     
                     <h3>4. Rental Period</h3>
                     <p>The rental period begins and ends at the times specified in your booking. Late returns may incur additional charges. If you need to extend your rental, please contact us at least 24 hours before the scheduled return time.</p>
@@ -279,7 +268,7 @@
                     <p><strong>By proceeding with your booking, you acknowledge that you have read, understood, and agree to be bound by these Terms and Conditions.</strong></p>
                 </div>
                 <div class="modal-footer">
-                    <button class="modal-close-button" onclick="closeTermsModal()">Close</button>
+                    <button class="modal-close-button" id="closeTermsModalBtn2">Close</button>
                 </div>
             </div>
         </div>
@@ -291,8 +280,6 @@
         </div>
     </footer>
 
-    <!-- Stripe.js -->
-    <script src="https://js.stripe.com/v3/"></script>
     <script src="script.js"></script>
 </body>
 </html>

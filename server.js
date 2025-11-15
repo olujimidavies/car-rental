@@ -1,129 +1,207 @@
+// Load environment variables
+require('dotenv').config();
+
+// Core modules
+const fs = require('fs');
+const path = require('path');
+
+// Third-party modules
 const express = require('express');
+const bodyParser = require('body-parser');
+const cors = require('cors');
 const multer = require('multer');
 const nodemailer = require('nodemailer');
-const cors = require('cors');
-const bodyParser = require('body-parser');
-const path = require('path');
-const fs = require('fs');
-const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY || '');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const { body, validationResult } = require('express-validator');
+const validator = require('validator');
+const bcrypt = require('bcrypt');
+const session = require('express-session');
 
+// Initialize app
 const app = express();
-const PORT = process.env.PORT || 3000;
 
-// Middleware
-app.use(cors());
-app.use(express.static(__dirname));
-app.use('/images', express.static('images'));
+// Security Headers
+app.use(helmet({
+    contentSecurityPolicy: {
+        directives: {
+            defaultSrc: ["'self'"],
+            styleSrc: ["'self'", "'unsafe-inline'"],
+            scriptSrc: ["'self'", "'unsafe-inline'"],
+            imgSrc: ["'self'", "data:", "https:"],
+        },
+    },
+}));
 
-// Body parser - but skip multipart/form-data (multer handles that)
-app.use((req, res, next) => {
-    if (req.headers['content-type'] && req.headers['content-type'].includes('multipart/form-data')) {
-        return next(); // Skip body-parser for multipart
-    }
-    bodyParser.json()(req, res, next);
+// CORS Configuration - Restrict to specific origins
+const allowedOrigins = process.env.ALLOWED_ORIGINS 
+    ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
+    : ['http://localhost:3000', 'http://127.0.0.1:3000'];
+
+app.use(cors({
+    origin: function (origin, callback) {
+        // Allow requests with no origin (mobile apps, Postman, etc.)
+        if (!origin) return callback(null, true);
+        // Check if origin is in allowed list
+        if (allowedOrigins.indexOf(origin) !== -1) {
+            callback(null, true);
+        } else {
+            // Log for debugging
+            console.log('CORS blocked origin:', origin);
+            console.log('Allowed origins:', allowedOrigins);
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+// Rate Limiting
+const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 100, // limit each IP to 100 requests per windowMs
+    message: 'Too many requests from this IP, please try again later.'
 });
 
-app.use((req, res, next) => {
-    if (req.headers['content-type'] && req.headers['content-type'].includes('multipart/form-data')) {
-        return next(); // Skip body-parser for multipart
-    }
-    bodyParser.urlencoded({ extended: true, limit: '10mb' })(req, res, next);
+const bookingLimiter = rateLimit({
+    windowMs: 60 * 60 * 1000, // 1 hour
+    max: 5, // 5 bookings per hour per IP
+    message: 'Too many booking attempts. Please try again later.'
 });
+
+app.use('/api/', limiter);
+app.use('/api/bookings', bookingLimiter);
+
+// Body Parser
+app.use(bodyParser.json({ limit: '10mb' }));
+app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
+
+// Session Configuration
+app.use(session({
+    secret: process.env.SESSION_SECRET || 'your-secret-key-change-in-production',
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+        secure: process.env.NODE_ENV === 'production', // HTTPS only in production
+        httpOnly: true, // Prevents XSS attacks
+        maxAge: 24 * 60 * 60 * 1000 // 24 hours
+    }
+}));
 
 // Ensure images directory exists
 const imagesDir = path.join(__dirname, 'images');
-if (!fs.existsSync(imagesDir)) {
-    fs.mkdirSync(imagesDir, { recursive: true });
-}
+if (!fs.existsSync(imagesDir)) fs.mkdirSync(imagesDir, { recursive: true });
 
-// Configure multer for image uploads
+// Multer setup for image uploads with security
 const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        cb(null, 'images/');
-    },
-    filename: function (req, file, cb) {
-        // Generate a safe filename with timestamp and random number
+    destination: (req, file, cb) => cb(null, 'images/'),
+    filename: (req, file, cb) => {
         const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        // Get original extension and sanitize it
         const ext = path.extname(file.originalname).toLowerCase();
-        // Create filename: carId-images-timestamp-random.ext
-        const carId = req.params.id || 'car';
-        const filename = `${carId}-images-${uniqueSuffix}${ext}`;
-        cb(null, filename);
+        // Sanitize carId to prevent path traversal
+        const carId = parseInt(req.params.id) || 0;
+        if (isNaN(carId) || carId <= 0) {
+            return cb(new Error('Invalid car ID'));
+        }
+        const safeCarId = carId.toString().replace(/[^0-9]/g, '');
+        cb(null, `${safeCarId}-images-${uniqueSuffix}${ext}`);
     }
 });
 
-const upload = multer({ 
+const upload = multer({
     storage: storage,
-    limits: { 
-        fileSize: 10 * 1024 * 1024, // 10MB limit per file
-        files: 10 // Maximum 10 files
+    limits: {
+        fileSize: 5 * 1024 * 1024, // 5MB limit
+        files: 10 // Max 10 files
     },
-    fileFilter: function (req, file, cb) {
-        try {
-            // Allowed file extensions
-            const allowedExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp'];
-            // Allowed MIME types
-            const allowedMimeTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
-            
-            // Get file extension
-            const fileExt = path.extname(file.originalname).toLowerCase();
-            
-            // Check extension
-            const hasValidExtension = allowedExtensions.includes(fileExt);
-            
-            // Check MIME type
-            const hasValidMimeType = allowedMimeTypes.includes(file.mimetype.toLowerCase());
-            
-            if (hasValidExtension && hasValidMimeType) {
-                cb(null, true);
-            } else {
-                cb(new Error(`Invalid file type. Allowed types: ${allowedExtensions.join(', ')}`));
-            }
-        } catch (error) {
-            cb(new Error('Error validating file: ' + error.message));
+    fileFilter: (req, file, cb) => {
+        // Only allow image files
+        const allowedTypes = /jpeg|jpg|png|gif|webp/;
+        const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+        const mimetype = allowedTypes.test(file.mimetype);
+        
+        if (extname && mimetype) {
+            cb(null, true);
+        } else {
+            cb(new Error('Only image files (jpeg, jpg, png, gif, webp) are allowed'));
         }
     }
 });
 
-// Car inventory data file
+// Admin credentials (in production, store hashed password in database)
+const ADMIN_USERNAME = 'Admin';
+const ADMIN_PASSWORD_HASH = bcrypt.hashSync('Adekunle0987', 10); // Hash the password
+
+// Authentication middleware for admin endpoints
+const authenticateAdmin = (req, res, next) => {
+    if (req.session && req.session.isAdmin) {
+        return next();
+    }
+    return res.status(401).json({ error: 'Unauthorized. Please log in as admin.' });
+};
+
+// Admin login endpoint
+app.post('/api/admin/login', [
+    body('username').trim().notEmpty().withMessage('Username is required'),
+    body('password').notEmpty().withMessage('Password is required')
+], async (req, res) => {
+    try {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ error: 'Validation failed', details: errors.array() });
+        }
+        
+        const { username, password } = req.body;
+        
+        // Check credentials
+        if (username === ADMIN_USERNAME && bcrypt.compareSync(password, ADMIN_PASSWORD_HASH)) {
+            req.session.isAdmin = true;
+            req.session.username = username;
+            return res.json({ 
+                message: 'Login successful',
+                username: username
+            });
+        } else {
+            return res.status(401).json({ error: 'Invalid username or password' });
+        }
+    } catch (error) {
+        console.error('Login error:', error);
+        res.status(500).json({ error: 'Login failed' });
+    }
+});
+
+// Admin logout endpoint
+app.post('/api/admin/logout', (req, res) => {
+    req.session.destroy((err) => {
+        if (err) {
+            return res.status(500).json({ error: 'Logout failed' });
+        }
+        res.json({ message: 'Logged out successfully' });
+    });
+});
+
+// Check admin session
+app.get('/api/admin/check', (req, res) => {
+    if (req.session && req.session.isAdmin) {
+        res.json({ 
+            isAdmin: true, 
+            username: req.session.username 
+        });
+    } else {
+        res.json({ isAdmin: false });
+    }
+});
+
+// Inventory file
 const inventoryFile = path.join(__dirname, 'inventory.json');
 
-// Initialize inventory if it doesn't exist
 function initializeInventory() {
     if (!fs.existsSync(inventoryFile)) {
         const initialInventory = {
             cars: [
-                {
-                    id: 1,
-                    name: "Toyota Camry",
-                    model: "Camry",
-                    price: 60,
-                    year: "2024",
-                    seats: "5",
-                    transmission: "Automatic",
-                    fuel: "Gasoline",
-                    mileage: "Unlimited",
-                    features: "Bluetooth, Navigation, Backup Camera, Apple CarPlay",
-                    quantity: 1,
-                    available: 1,
-                    images: []
-                },
-                {
-                    id: 2,
-                    name: "Toyota RAV4",
-                    model: "RAV4",
-                    price: 70,
-                    year: "2024",
-                    seats: "5",
-                    transmission: "Automatic",
-                    fuel: "Gasoline",
-                    mileage: "Unlimited",
-                    features: "All-Wheel Drive, Apple CarPlay, Safety Sense, Panoramic Roof",
-                    quantity: 3,
-                    available: 3,
-                    images: []
-                }
+                { id: 1, name: "Toyota Camry", price: 60, quantity: 1, available: 1, images: [] },
+                { id: 2, name: "Toyota RAV4", price: 70, quantity: 3, available: 3, images: [] }
             ],
             bookings: []
         };
@@ -131,165 +209,80 @@ function initializeInventory() {
     }
 }
 
-// Load inventory
 function loadInventory() {
     initializeInventory();
     return JSON.parse(fs.readFileSync(inventoryFile, 'utf8'));
 }
 
-// Save inventory
-function saveInventory(inventory) {
-    fs.writeFileSync(inventoryFile, JSON.stringify(inventory, null, 2));
+function saveInventory(inv) {
+    fs.writeFileSync(inventoryFile, JSON.stringify(inv, null, 2));
 }
 
-// Email configuration
-// NOTE: You'll need to configure this with your actual email credentials
-// For Gmail, you'll need an App Password: https://support.google.com/accounts/answer/185833
+// Serve static files from "public" folder
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Serve images folder
+app.use('/images', express.static(path.join(__dirname, 'images')));
+
+// API info route (not root, to avoid interfering with static files)
+app.get('/api', (req, res) => {
+    res.json({ 
+        message: 'ES Dynamic Rentals API is running!',
+        endpoints: {
+            cars: '/api/cars',
+            bookings: '/api/bookings',
+            admin: '/api/admin'
+        }
+    });
+});
+
+// Email transporter
 const createTransporter = () => {
+    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
+        console.warn('⚠️  Email credentials not configured. Email functionality will be disabled.');
+        return null;
+    }
     return nodemailer.createTransport({
-        service: 'gmail', // Change to your email service
-        auth: {
-            user: process.env.EMAIL_USER || 'esdyamicrental@gmail.com', // Your email
-            pass: process.env.EMAIL_PASS || 'Semilore@123' // Your email password or app password
+        service: 'gmail',
+        auth: { 
+            user: process.env.EMAIL_USER, 
+            pass: process.env.EMAIL_PASS 
         }
     });
 };
 
-// Generate invoice HTML
-function generateInvoiceHTML(booking) {
-    const days = Math.ceil((new Date(booking.returnDate) - new Date(booking.pickupDate)) / (1000 * 60 * 60 * 24));
-    const subtotal = days * booking.pricePerDay;
-    const tax = subtotal * 0.08; // 8% tax
-    const total = subtotal + tax;
+// Demo email route
+app.post('/api/send-demo-email', async (req, res) => {
+    const { name, email } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email is required' });
 
-    return `
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
-            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
-            .invoice-details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; }
-            .detail-row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #eee; }
-            .detail-row:last-child { border-bottom: none; }
-            .total { font-size: 1.5em; font-weight: bold; color: #667eea; margin-top: 20px; }
-            .footer { text-align: center; margin-top: 30px; color: #666; font-size: 0.9em; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="header">
-                <h1>ES Dynamic Rentals</h1>
-                <p>Booking Confirmation & Invoice</p>
-            </div>
-            <div class="content">
-                <h2>Thank you for your booking, ${booking.firstName}!</h2>
-                <p>Your reservation has been confirmed. Below are your booking details:</p>
-                
-                <div class="invoice-details">
-                    <h3>Booking Information</h3>
-                    <div class="detail-row">
-                        <span><strong>Booking ID:</strong></span>
-                        <span>#${booking.bookingId}</span>
-                    </div>
-                    <div class="detail-row">
-                        <span><strong>Vehicle:</strong></span>
-                        <span>${booking.carName}</span>
-                    </div>
-                    <div class="detail-row">
-                        <span><strong>Pickup Date:</strong></span>
-                        <span>${new Date(booking.pickupDate).toLocaleDateString()}</span>
-                    </div>
-                    <div class="detail-row">
-                        <span><strong>Return Date:</strong></span>
-                        <span>${new Date(booking.returnDate).toLocaleDateString()}</span>
-                    </div>
-                    <div class="detail-row">
-                        <span><strong>Rental Period:</strong></span>
-                        <span>${days} day(s)</span>
-                    </div>
-                    <div class="detail-row">
-                        <span><strong>Pickup Location:</strong></span>
-                        <span>${booking.pickupLocation}</span>
-                    </div>
-                </div>
+    try {
+        const transporter = createTransporter();
+        await transporter.sendMail({
+            from: process.env.EMAIL_USER,
+            to: email,
+            subject: 'Demo Email',
+            html: `<h2>Hello ${name || 'there'}!</h2><p>This is a demo email.</p>`
+        });
+        res.json({ message: 'Demo email sent!' });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Failed to send email' });
+    }
+});
 
-                <div class="invoice-details">
-                    <h3>Customer Information</h3>
-                    <div class="detail-row">
-                        <span><strong>Name:</strong></span>
-                        <span>${booking.firstName} ${booking.lastName}</span>
-                    </div>
-                    <div class="detail-row">
-                        <span><strong>Email:</strong></span>
-                        <span>${booking.email}</span>
-                    </div>
-                    <div class="detail-row">
-                        <span><strong>Phone:</strong></span>
-                        <span>${booking.phone}</span>
-                    </div>
-                </div>
-
-                <div class="invoice-details">
-                    <h3>Pricing</h3>
-                    <div class="detail-row">
-                        <span>Daily Rate:</span>
-                        <span>$${booking.pricePerDay}/day</span>
-                    </div>
-                    <div class="detail-row">
-                        <span>Rental Days:</span>
-                        <span>${days} day(s)</span>
-                    </div>
-                    <div class="detail-row">
-                        <span>Subtotal:</span>
-                        <span>$${subtotal.toFixed(2)}</span>
-                    </div>
-                    <div class="detail-row">
-                        <span>Tax (8%):</span>
-                        <span>$${tax.toFixed(2)}</span>
-                    </div>
-                    <div class="detail-row total">
-                        <span>Total:</span>
-                        <span>$${total.toFixed(2)}</span>
-                    </div>
-                </div>
-
-                ${booking.additionalInfo ? `
-                <div class="invoice-details">
-                    <h3>Additional Information</h3>
-                    <p>${booking.additionalInfo}</p>
-                </div>
-                ` : ''}
-
-                <div class="footer">
-                    <p><strong>ES Dynamic Rentals</strong></p>
-                    <p>1460 South Canton Avenue, Tulsa, Oklahoma 74137</p>
-                    <p>Phone: 918-204-8691 | Email: esdyamicrental@gmail.com</p>
-                    <p>Please arrive 15 minutes before your scheduled pickup time.</p>
-                </div>
-            </div>
-        </div>
-    </body>
-    </html>
-    `;
-}
-
-// API Routes
-
-// Get all cars with availability
+// Get all cars
 app.get('/api/cars', (req, res) => {
     try {
         const inventory = loadInventory();
-        const carsWithStatus = inventory.cars.map(car => ({
+        res.json(inventory.cars.map(car => ({
             ...car,
             price: `$${car.price}/day`,
-            availability: car.available > 0 ? (car.available < car.quantity ? 'limited' : 'available') : 'unavailable',
-            image: car.images && car.images.length > 0 ? `/images/${car.images[0]}` : null
-        }));
-        res.json(carsWithStatus);
-    } catch (error) {
+            availability: car.available > 0 ? 'available' : 'unavailable',
+            image: car.images && car.images.length > 0 ? `/images/${car.images[0]}` : '/images/placeholder.png',
+            images: car.images && car.images.length > 0 ? car.images.map(img => `/images/${img}`) : []
+        })));
+    } catch (err) {
         res.status(500).json({ error: 'Failed to load cars' });
     }
 });
@@ -299,179 +292,412 @@ app.get('/api/cars/:id', (req, res) => {
     try {
         const inventory = loadInventory();
         const car = inventory.cars.find(c => c.id === parseInt(req.params.id));
-        if (!car) {
-            return res.status(404).json({ error: 'Car not found' });
-        }
-        const carWithStatus = {
+        if (!car) return res.status(404).json({ error: 'Car not found' });
+        
+        // Return formatted car object matching the /api/cars structure
+        res.json({
             ...car,
             price: `$${car.price}/day`,
-            availability: car.available > 0 ? (car.available < car.quantity ? 'limited' : 'available') : 'unavailable',
-            images: car.images.map(img => `/images/${img}`)
-        };
-        res.json(carWithStatus);
-    } catch (error) {
+            availability: car.available > 0 ? 'available' : 'unavailable',
+            image: car.images && car.images.length > 0 ? `/images/${car.images[0]}` : '/images/placeholder.png',
+            images: car.images && car.images.length > 0 ? car.images.map(img => `/images/${img}`) : []
+        });
+    } catch (err) {
         res.status(500).json({ error: 'Failed to load car' });
     }
 });
 
-// Upload images for a car
-// This route must be before body-parser processes it
-app.post('/api/cars/:id/images', (req, res, next) => {
-    // Log request for debugging
-    console.log('Upload request received:', {
-        carId: req.params.id,
-        contentType: req.headers['content-type']
-    });
-    
-    // Use multer middleware directly
+// Upload car images (Admin only)
+app.post('/api/cars/:id/images', authenticateAdmin, (req, res) => {
     const uploadMiddleware = upload.array('images', 10);
     uploadMiddleware(req, res, (err) => {
-        if (err) {
-            console.error('Multer error:', err);
-            console.error('Error code:', err.code);
-            console.error('Error field:', err.field);
-            
-            if (err instanceof multer.MulterError) {
-                if (err.code === 'LIMIT_FILE_SIZE') {
-                    return res.status(400).json({ error: 'File too large. Maximum size is 10MB.' });
-                }
-                if (err.code === 'LIMIT_FILE_COUNT') {
-                    return res.status(400).json({ error: 'Too many files. Maximum is 10 files.' });
-                }
-                if (err.code === 'LIMIT_UNEXPECTED_FILE') {
-                    return res.status(400).json({ 
-                        error: `Unexpected field name "${err.field}". Please use field name "images".` 
-                    });
-                }
-                return res.status(400).json({ error: err.message || 'Upload error occurred' });
-            }
-            // Handle fileFilter errors
-            return res.status(400).json({ error: err.message || 'Invalid file type' });
-        }
-        
+        if (err) return res.status(400).json({ error: err.message });
         try {
-            console.log('Files received:', req.files ? req.files.length : 0);
-            
             const inventory = loadInventory();
             const car = inventory.cars.find(c => c.id === parseInt(req.params.id));
-            
-            if (!car) {
-                return res.status(404).json({ error: 'Car not found' });
-            }
+            if (!car) return res.status(404).json({ error: 'Car not found' });
 
-            if (!req.files || req.files.length === 0) {
-                return res.status(400).json({ error: 'No images uploaded' });
-            }
-
-            const uploadedFiles = req.files.map(file => file.filename);
-            car.images = [...(car.images || []), ...uploadedFiles];
-            
+            const files = req.files.map(f => f.filename);
+            car.images = [...(car.images || []), ...files];
             saveInventory(inventory);
-            console.log('Upload successful:', uploadedFiles);
-            res.json({ 
-                message: 'Images uploaded successfully',
-                images: car.images.map(img => `/images/${img}`)
-            });
+            res.json({ message: 'Images uploaded', images: car.images });
         } catch (error) {
-            console.error('Upload processing error:', error);
-            res.status(500).json({ error: error.message || 'Failed to upload images' });
+            res.status(500).json({ error: error.message });
         }
     });
 });
 
-// Create payment intent
-app.post('/api/create-payment-intent', async (req, res) => {
+// Add new car (Admin only)
+app.post('/api/cars', authenticateAdmin, [
+    body('name').trim().isLength({ min: 1, max: 100 }).escape().withMessage('Car name is required'),
+    body('model').optional().trim().isLength({ max: 100 }).escape(),
+    body('trim').optional().trim().isLength({ max: 200 }).escape(),
+    body('price').isInt({ min: 1 }).withMessage('Price must be a positive number'),
+    body('year').optional().trim().isLength({ max: 10 }).escape(),
+    body('seats').optional().trim().isLength({ max: 10 }).escape(),
+    body('transmission').optional().trim().isLength({ max: 50 }).escape(),
+    body('fuel').optional().trim().isLength({ max: 50 }).escape(),
+    body('mileage').optional().trim().isLength({ max: 100 }).escape(),
+    body('features').optional().trim().isLength({ max: 500 }).escape(),
+    body('color').optional().trim().isLength({ max: 100 }).escape(),
+    body('quantity').isInt({ min: 1 }).withMessage('Quantity must be at least 1'),
+    body('available').isInt({ min: 0 }).withMessage('Available must be 0 or greater')
+], (req, res) => {
     try {
-        const { carId, pickupDate, returnDate } = req.body;
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ error: 'Validation failed', details: errors.array() });
+        }
         
         const inventory = loadInventory();
-        const car = inventory.cars.find(c => c.id === parseInt(carId));
         
-        if (!car) {
-            return res.status(404).json({ error: 'Car not found' });
-        }
-
-        // Calculate total
-        const pickup = new Date(pickupDate);
-        const returnD = new Date(returnDate);
-        const days = Math.ceil((returnD - pickup) / (1000 * 60 * 60 * 24));
-        const subtotal = days * car.price;
-        const tax = subtotal * 0.08;
-        const total = Math.round((subtotal + tax) * 100); // Convert to cents
-
-        if (!stripe || !process.env.STRIPE_SECRET_KEY) {
-            return res.status(500).json({ error: 'Stripe is not configured. Please add STRIPE_SECRET_KEY to your environment variables.' });
-        }
-
-        const paymentIntent = await stripe.paymentIntents.create({
-            amount: total,
-            currency: 'usd',
-            metadata: {
-                carId: car.id.toString(),
-                carName: car.name,
-                pickupDate,
-                returnDate,
-                days: days.toString()
+        // Find the highest ID and add 1
+        const maxId = inventory.cars.length > 0 
+            ? Math.max(...inventory.cars.map(c => c.id))
+            : 0;
+        const newId = maxId + 1;
+        
+        const newCar = {
+            id: newId,
+            name: req.body.name,
+            model: req.body.model || '',
+            trim: req.body.trim || '',
+            price: parseInt(req.body.price),
+            year: req.body.year || '',
+            seats: req.body.seats || '',
+            transmission: req.body.transmission || '',
+            fuel: req.body.fuel || '',
+            mileage: req.body.mileage || '',
+            features: req.body.features || '',
+            color: req.body.color || '',
+            quantity: parseInt(req.body.quantity),
+            available: parseInt(req.body.available),
+            images: []
+        };
+        
+        inventory.cars.push(newCar);
+        saveInventory(inventory);
+        
+        res.json({
+            message: 'Car added successfully',
+            car: {
+                ...newCar,
+                price: `$${newCar.price}/day`,
+                availability: newCar.available > 0 ? 'available' : 'unavailable',
+                image: '/images/placeholder.png'
             }
         });
-
-        res.json({ 
-            clientSecret: paymentIntent.client_secret,
-            amount: total / 100
-        });
     } catch (error) {
-        console.error('Payment intent error:', error);
-        res.status(500).json({ error: 'Failed to create payment intent' });
+        console.error('Add car error:', error);
+        res.status(500).json({ error: error.message || 'Failed to add car' });
     }
 });
 
-// Create booking (after payment)
-app.post('/api/bookings', async (req, res) => {
+// Update car details (Admin only)
+app.put('/api/cars/:id', authenticateAdmin, [
+    body('name').optional().trim().isLength({ min: 1, max: 100 }).escape().withMessage('Car name must be 1-100 characters'),
+    body('model').optional().trim().isLength({ max: 100 }).escape(),
+    body('trim').optional().trim().isLength({ max: 200 }).escape(),
+    body('price').optional().isInt({ min: 1 }).withMessage('Price must be a positive number'),
+    body('year').optional().trim().isLength({ max: 10 }).escape(),
+    body('seats').optional().trim().isLength({ max: 10 }).escape(),
+    body('transmission').optional().trim().isLength({ max: 50 }).escape(),
+    body('fuel').optional().trim().isLength({ max: 50 }).escape(),
+    body('mileage').optional().trim().isLength({ max: 100 }).escape(),
+    body('features').optional().trim().isLength({ max: 500 }).escape(),
+    body('color').optional().trim().isLength({ max: 100 }).escape(),
+    body('quantity').optional().isInt({ min: 1 }).withMessage('Quantity must be at least 1'),
+    body('available').optional().isInt({ min: 0 }).withMessage('Available must be 0 or greater')
+], (req, res) => {
     try {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ error: 'Validation failed', details: errors.array() });
+        }
+        
         const inventory = loadInventory();
-        const { carId, firstName, lastName, email, phone, pickupDate, returnDate, pickupLocation, additionalInfo, paymentIntentId } = req.body;
-
-        const car = inventory.cars.find(c => c.id === parseInt(carId));
+        const carId = parseInt(req.params.id);
+        
+        const car = inventory.cars.find(c => c.id === carId);
         if (!car) {
             return res.status(404).json({ error: 'Car not found' });
         }
+        
+        // Update only provided fields
+        if (req.body.name !== undefined) car.name = req.body.name;
+        if (req.body.model !== undefined) car.model = req.body.model;
+        if (req.body.trim !== undefined) car.trim = req.body.trim;
+        if (req.body.price !== undefined) car.price = parseInt(req.body.price);
+        if (req.body.year !== undefined) car.year = req.body.year;
+        if (req.body.seats !== undefined) car.seats = req.body.seats;
+        if (req.body.transmission !== undefined) car.transmission = req.body.transmission;
+        if (req.body.fuel !== undefined) car.fuel = req.body.fuel;
+        if (req.body.mileage !== undefined) car.mileage = req.body.mileage;
+        if (req.body.features !== undefined) car.features = req.body.features;
+        if (req.body.color !== undefined) car.color = req.body.color;
+        if (req.body.quantity !== undefined) car.quantity = parseInt(req.body.quantity);
+        if (req.body.available !== undefined) car.available = parseInt(req.body.available);
+        
+        // Ensure available doesn't exceed quantity
+        if (car.available > car.quantity) {
+            car.available = car.quantity;
+        }
+        
+        saveInventory(inventory);
+        
+        res.json({
+            message: 'Car updated successfully',
+            car: {
+                ...car,
+                price: `$${car.price}/day`,
+                availability: car.available > 0 ? 'available' : 'unavailable',
+                image: car.images && car.images.length > 0 ? `/images/${car.images[0]}` : '/images/placeholder.png'
+            }
+        });
+    } catch (error) {
+        console.error('Update car error:', error);
+        res.status(500).json({ error: error.message || 'Failed to update car' });
+    }
+});
 
+// Delete car (Admin only)
+app.delete('/api/cars/:id', authenticateAdmin, (req, res) => {
+    try {
+        const inventory = loadInventory();
+        const carId = parseInt(req.params.id);
+        
+        const carIndex = inventory.cars.findIndex(c => c.id === carId);
+        if (carIndex === -1) {
+            return res.status(404).json({ error: 'Car not found' });
+        }
+        
+        // Remove car from inventory
+        inventory.cars.splice(carIndex, 1);
+        
+        // Also remove any bookings for this car (optional - you might want to keep them)
+        // inventory.bookings = inventory.bookings.filter(b => b.carId !== carId);
+        
+        saveInventory(inventory);
+        
+        res.json({ message: 'Car deleted successfully' });
+    } catch (error) {
+        console.error('Delete car error:', error);
+        res.status(500).json({ error: error.message || 'Failed to delete car' });
+    }
+});
+
+// Update car availability (Admin only)
+app.put('/api/cars/:id/availability', authenticateAdmin, (req, res) => {
+    try {
+        const { available, quantity } = req.body;
+        
+        if (typeof available !== 'number' || typeof quantity !== 'number') {
+            return res.status(400).json({ error: 'Available and quantity must be numbers' });
+        }
+        
+        if (available < 0 || quantity < 0) {
+            return res.status(400).json({ error: 'Available and quantity must be non-negative' });
+        }
+        
+        if (available > quantity) {
+            return res.status(400).json({ error: 'Available cannot exceed total quantity' });
+        }
+        
+        const inventory = loadInventory();
+        const car = inventory.cars.find(c => c.id === parseInt(req.params.id));
+        if (!car) return res.status(404).json({ error: 'Car not found' });
+        
+        car.available = available;
+        car.quantity = quantity;
+        
+        saveInventory(inventory);
+        res.json({ 
+            message: 'Availability updated successfully',
+            car: {
+                ...car,
+                price: `$${car.price}/day`,
+                availability: car.available > 0 ? 'available' : 'unavailable',
+                image: car.images && car.images.length > 0 ? `/images/${car.images[0]}` : '/images/placeholder.png'
+            }
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message || 'Failed to update availability' });
+    }
+});
+
+// Escape HTML to prevent XSS
+function escapeHtml(text) {
+    if (!text) return '';
+    const map = {
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+    };
+    return text.toString().replace(/[&<>"']/g, m => map[m]);
+}
+
+// Generate invoice HTML
+function generateInvoiceHTML(booking) {
+    return `
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+        .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+        .content { background: #f8f9fa; padding: 30px; border-radius: 0 0 10px 10px; }
+        .invoice-details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; }
+        .detail-row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #e0e0e0; }
+        .detail-row:last-child { border-bottom: none; }
+        .label { font-weight: 600; color: #667eea; }
+        .total { font-size: 1.3em; font-weight: 700; color: #667eea; margin-top: 20px; padding-top: 20px; border-top: 2px solid #667eea; }
+        .footer { text-align: center; margin-top: 30px; color: #666; font-size: 0.9em; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>ES Dynamic Rentals</h1>
+            <h2>Booking Invoice</h2>
+        </div>
+        <div class="content">
+            <div class="invoice-details">
+                <div class="detail-row">
+                    <span class="label">Booking ID:</span>
+                    <span>${booking.bookingId}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="label">Customer Name:</span>
+                    <span>${booking.firstName} ${booking.lastName}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="label">Email:</span>
+                    <span>${booking.email}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="label">Phone:</span>
+                    <span>${booking.phone}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="label">Car:</span>
+                    <span>${booking.carName}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="label">Pickup Date:</span>
+                    <span>${new Date(booking.pickupDate).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="label">Return Date:</span>
+                    <span>${new Date(booking.returnDate).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="label">Rental Period:</span>
+                    <span>${booking.days} day(s)</span>
+                </div>
+                <div class="detail-row">
+                    <span class="label">Pickup Location:</span>
+                    <span>1460 South Canton Avenue, Tulsa, Oklahoma 74137</span>
+                </div>
+                ${booking.additionalInfo ? `
+                <div class="detail-row">
+                    <span class="label">Additional Info:</span>
+                    <span>${escapeHtml(booking.additionalInfo)}</span>
+                </div>
+                ` : ''}
+                <div class="detail-row">
+                    <span class="label">Price per Day:</span>
+                    <span>$${booking.pricePerDay.toFixed(2)}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="label">Subtotal (${booking.days} days):</span>
+                    <span>$${booking.subtotal.toFixed(2)}</span>
+                </div>
+                <div class="detail-row">
+                    <span class="label">Tax (8%):</span>
+                    <span>$${booking.tax.toFixed(2)}</span>
+                </div>
+                <div class="total detail-row">
+                    <span>Total Amount:</span>
+                    <span>$${booking.total.toFixed(2)}</span>
+                </div>
+            </div>
+            <div style="background: #fff3cd; border: 2px solid #ffc107; border-radius: 8px; padding: 15px; margin: 20px 0;">
+                <p style="margin: 0; color: #856404; font-weight: 600; font-size: 1rem;">
+                    ⚠️ Payment Required at Pickup
+                </p>
+                <p style="margin: 8px 0 0 0; color: #856404; font-size: 0.95rem;">
+                    This is a reservation confirmation. Payment must be completed at our location when you pick up the vehicle. Please bring a valid ID and payment method.
+                </p>
+            </div>
+            <div class="footer">
+                <p>Thank you for choosing ES Dynamic Rentals!</p>
+                <p>For any questions, contact us at:<br>
+                Phone: 918-204-8691<br>
+                Email: esdynamicrentals@gmail.com</p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
+    `;
+}
+
+// Create booking with input validation
+app.post('/api/bookings', [
+    body('carId').isInt({ min: 1 }).withMessage('Invalid car ID'),
+    body('firstName').trim().isLength({ min: 1, max: 50 }).escape().withMessage('First name must be 1-50 characters'),
+    body('lastName').trim().isLength({ min: 1, max: 50 }).escape().withMessage('Last name must be 1-50 characters'),
+    body('email').isEmail().normalizeEmail().withMessage('Invalid email address'),
+    body('phone').trim().matches(/^[\d\s\-\+\(\)]+$/).isLength({ min: 10, max: 20 }).withMessage('Invalid phone number'),
+    body('pickupDate').isISO8601().withMessage('Invalid pickup date'),
+    body('returnDate').isISO8601().withMessage('Invalid return date'),
+    body('pickupLocation').trim().isLength({ min: 1, max: 100 }).escape().withMessage('Invalid pickup location'),
+    body('additionalInfo').optional().trim().isLength({ max: 500 }).escape().withMessage('Additional info too long')
+], async (req, res) => {
+    try {
+        // Check validation errors
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ 
+                error: 'Validation failed', 
+                details: errors.array() 
+            });
+        }
+        
+        const { carId, firstName, lastName, email, phone, pickupDate, returnDate, pickupLocation, additionalInfo } = req.body;
+        
+        const inventory = loadInventory();
+        const car = inventory.cars.find(c => c.id === parseInt(carId));
+        if (!car) return res.status(404).json({ error: 'Car not found' });
+        
+        // Check availability
         if (car.available <= 0) {
             return res.status(400).json({ error: 'Car is not available' });
         }
-
-        // Check date validity
+        
+        // Calculate rental period
         const pickup = new Date(pickupDate);
         const returnD = new Date(returnDate);
-        if (returnD <= pickup) {
+        const days = Math.ceil((returnD - pickup) / (1000 * 60 * 60 * 24));
+        
+        if (days <= 0) {
             return res.status(400).json({ error: 'Return date must be after pickup date' });
         }
-
-        // Create booking
-        const bookingId = 'BK' + Date.now();
-        const days = Math.ceil((returnD - pickup) / (1000 * 60 * 60 * 24));
-        const subtotal = days * car.price;
-        const tax = subtotal * 0.08;
+        
+        // Calculate pricing
+        const pricePerDay = car.price;
+        const subtotal = pricePerDay * days;
+        const tax = subtotal * 0.08; // 8% tax
         const total = subtotal + tax;
-
-        // Verify payment if paymentIntentId is provided
-        let paymentStatus = 'pending';
-        if (paymentIntentId && stripe && process.env.STRIPE_SECRET_KEY) {
-            try {
-                const paymentIntent = await stripe.paymentIntents.retrieve(paymentIntentId);
-                paymentStatus = paymentIntent.status;
-                if (paymentStatus !== 'succeeded') {
-                    return res.status(400).json({ error: 'Payment not completed. Please complete the payment to confirm your booking.' });
-                }
-            } catch (paymentError) {
-                console.error('Payment verification error:', paymentError);
-                return res.status(400).json({ error: 'Payment verification failed. Please try again.' });
-            }
-        }
-
+        
+        // Create booking
         const booking = {
-            bookingId,
-            carId: car.id,
+            bookingId: `BK${Date.now()}`,
+            carId: parseInt(carId),
             carName: car.name,
             firstName,
             lastName,
@@ -481,214 +707,82 @@ app.post('/api/bookings', async (req, res) => {
             returnDate,
             pickupLocation,
             additionalInfo: additionalInfo || '',
-            pricePerDay: car.price,
+            pricePerDay,
             days,
             subtotal,
             tax,
             total,
-            paymentIntentId: paymentIntentId || null,
-            paymentStatus,
+            paymentStatus: 'pending',
             bookingDate: new Date().toISOString()
         };
-
-        // Update availability
-        car.available -= 1;
+        
+        // Add booking to inventory
+        inventory.bookings = inventory.bookings || [];
         inventory.bookings.push(booking);
+        
+        // Decrease car availability
+        car.available = Math.max(0, car.available - 1);
+        
+        // Save inventory
         saveInventory(inventory);
-
-        // Send email invoice to customer
-        try {
-            const transporter = createTransporter();
-            const businessEmail = process.env.EMAIL_USER || 'esdyamicrental@gmail.com';
+        
+        // Send invoice emails
+        const transporter = createTransporter();
+        if (transporter) {
+            const invoiceHTML = generateInvoiceHTML(booking);
+            const emailSubject = `Booking Confirmation - ${booking.bookingId} - ES Dynamic Rentals`;
             
             // Send to customer
-            const customerMailOptions = {
-                from: businessEmail,
-                to: email,
-                subject: `Booking Confirmation #${bookingId} - ES Dynamic Rentals`,
-                html: generateInvoiceHTML(booking),
-                text: `Thank you for your booking, ${firstName}!\n\nBooking ID: ${bookingId}\nCar: ${car.name}\nPickup: ${pickupDate}\nReturn: ${returnDate}\nTotal: $${total.toFixed(2)}\n\nES Dynamic Rentals`
-            };
-
-            await transporter.sendMail(customerMailOptions);
-            console.log(`Invoice email sent to customer: ${email}`);
+            try {
+                await transporter.sendMail({
+                    from: process.env.EMAIL_USER,
+                    to: email,
+                    subject: emailSubject,
+                    html: invoiceHTML
+                });
+                console.log(`✅ Invoice sent to customer: ${email}`);
+            } catch (emailError) {
+                console.error('Error sending email to customer:', emailError);
+            }
             
-            // Send copy to business
-            const businessMailOptions = {
-                from: businessEmail,
-                to: businessEmail,
-                subject: `New Booking Received #${bookingId} - ${car.name}`,
-                html: `
-                    <!DOCTYPE html>
-                    <html>
-                    <head>
-                        <style>
-                            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-                            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-                            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
-                            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
-                            .booking-details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; }
-                            .detail-row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #eee; }
-                            .detail-row:last-child { border-bottom: none; }
-                            .total { font-size: 1.5em; font-weight: bold; color: #667eea; margin-top: 20px; }
-                        </style>
-                    </head>
-                    <body>
-                        <div class="container">
-                            <div class="header">
-                                <h1>New Booking Received</h1>
-                                <p>Booking ID: #${bookingId}</p>
-                            </div>
-                            <div class="content">
-                                <h2>Booking Details</h2>
-                                
-                                <div class="booking-details">
-                                    <h3>Customer Information</h3>
-                                    <div class="detail-row">
-                                        <span><strong>Name:</strong></span>
-                                        <span>${firstName} ${lastName}</span>
-                                    </div>
-                                    <div class="detail-row">
-                                        <span><strong>Email:</strong></span>
-                                        <span>${email}</span>
-                                    </div>
-                                    <div class="detail-row">
-                                        <span><strong>Phone:</strong></span>
-                                        <span>${phone}</span>
-                                    </div>
-                                </div>
-
-                                <div class="booking-details">
-                                    <h3>Rental Information</h3>
-                                    <div class="detail-row">
-                                        <span><strong>Vehicle:</strong></span>
-                                        <span>${car.name}</span>
-                                    </div>
-                                    <div class="detail-row">
-                                        <span><strong>Pickup Date:</strong></span>
-                                        <span>${new Date(pickupDate).toLocaleDateString()}</span>
-                                    </div>
-                                    <div class="detail-row">
-                                        <span><strong>Return Date:</strong></span>
-                                        <span>${new Date(returnDate).toLocaleDateString()}</span>
-                                    </div>
-                                    <div class="detail-row">
-                                        <span><strong>Rental Period:</strong></span>
-                                        <span>${days} day(s)</span>
-                                    </div>
-                                    <div class="detail-row">
-                                        <span><strong>Pickup Location:</strong></span>
-                                        <span>${pickupLocation}</span>
-                                    </div>
-                                </div>
-
-                                <div class="booking-details">
-                                    <h3>Pricing</h3>
-                                    <div class="detail-row">
-                                        <span>Daily Rate:</span>
-                                        <span>$${booking.pricePerDay}/day</span>
-                                    </div>
-                                    <div class="detail-row">
-                                        <span>Rental Days:</span>
-                                        <span>${days} day(s)</span>
-                                    </div>
-                                    <div class="detail-row">
-                                        <span>Subtotal:</span>
-                                        <span>$${subtotal.toFixed(2)}</span>
-                                    </div>
-                                    <div class="detail-row">
-                                        <span>Tax (8%):</span>
-                                        <span>$${tax.toFixed(2)}</span>
-                                    </div>
-                                    <div class="detail-row total">
-                                        <span>Total:</span>
-                                        <span>$${total.toFixed(2)}</span>
-                                    </div>
-                                </div>
-
-                                ${additionalInfo ? `
-                                <div class="booking-details">
-                                    <h3>Additional Information</h3>
-                                    <p>${additionalInfo}</p>
-                                </div>
-                                ` : ''}
-
-                                <div class="booking-details">
-                                    <p><strong>Booking Date:</strong> ${new Date(booking.bookingDate).toLocaleString()}</p>
-                                </div>
-                            </div>
-                        </div>
-                    </body>
-                    </html>
-                `,
-                text: `New Booking Received\n\nBooking ID: ${bookingId}\nCustomer: ${firstName} ${lastName}\nEmail: ${email}\nPhone: ${phone}\nCar: ${car.name}\nPickup: ${pickupDate}\nReturn: ${returnDate}\nTotal: $${total.toFixed(2)}\n\nES Dynamic Rentals`
-            };
-
-            await transporter.sendMail(businessMailOptions);
-            console.log(`Booking notification sent to business: ${businessEmail}`);
-        } catch (emailError) {
-            console.error('Failed to send email:', emailError);
-            // Don't fail the booking if email fails
+            // Send to esdynamicrentals@gmail.com
+            try {
+                await transporter.sendMail({
+                    from: process.env.EMAIL_USER,
+                    to: 'esdynamicrentals@gmail.com',
+                    subject: `New Booking: ${booking.bookingId} - ${booking.carName}`,
+                    html: invoiceHTML
+                });
+                console.log(`✅ Invoice sent to esdynamicrentals@gmail.com`);
+            } catch (emailError) {
+                console.error('Error sending email to esdynamicrentals:', emailError);
+            }
+        } else {
+            console.warn('⚠️  Email not configured. Invoice emails not sent.');
         }
-
-        res.json({ 
-            success: true, 
-            booking,
-            message: 'Booking confirmed! Invoice has been sent to your email.'
+        
+        res.json({
+            message: 'Reservation confirmed! An invoice has been sent to your email. Please complete payment at our location when you pick up the vehicle.',
+            booking
         });
     } catch (error) {
         console.error('Booking error:', error);
-        res.status(500).json({ error: 'Failed to create booking' });
+        // Don't expose internal error details in production
+        const errorMessage = process.env.NODE_ENV === 'production' 
+            ? 'Failed to create booking. Please try again or contact support.'
+            : error.message;
+        res.status(500).json({ error: errorMessage });
     }
 });
 
-// Get bookings (for admin)
-app.get('/api/bookings', (req, res) => {
-    try {
-        const inventory = loadInventory();
-        res.json(inventory.bookings);
-    } catch (error) {
-        res.status(500).json({ error: 'Failed to load bookings' });
-    }
-});
-
-// Update car availability (for admin)
-app.put('/api/cars/:id/availability', (req, res) => {
-    try {
-        const inventory = loadInventory();
-        const car = inventory.cars.find(c => c.id === parseInt(req.params.id));
-        
-        if (!car) {
-            return res.status(404).json({ error: 'Car not found' });
-        }
-
-        if (req.body.available !== undefined) {
-            car.available = Math.max(0, Math.min(car.quantity, parseInt(req.body.available)));
-        }
-        if (req.body.quantity !== undefined) {
-            const newQuantity = parseInt(req.body.quantity);
-            car.quantity = newQuantity;
-            car.available = Math.min(car.available, newQuantity);
-        }
-
-        saveInventory(inventory);
-        res.json({ 
-            message: 'Availability updated',
-            car: {
-                ...car,
-                price: `$${car.price}/day`,
-                availability: car.available > 0 ? (car.available < car.quantity ? 'limited' : 'available') : 'unavailable'
-            }
-        });
-    } catch (error) {
-        res.status(500).json({ error: 'Failed to update availability' });
-    }
+// Optional: catch-all route for SPA (must be last - after all API routes!)
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 // Start server
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`Server running on http://localhost:${PORT}`);
-    console.log('Make sure to configure EMAIL_USER and EMAIL_PASS environment variables for email functionality');
+    console.log(`✅ Server running on http://localhost:${PORT}`);
     initializeInventory();
 });
-
