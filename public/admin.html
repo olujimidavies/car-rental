@@ -139,7 +139,7 @@
                 </a>
                 <div class="nav-links">
                     <a href="index.html">View Website</a>
-                    <a href="#" onclick="logout(); return false;" style="color: #dc3545;">Logout</a>
+                    <a href="#" id="logoutLink" style="color: #dc3545;">Logout</a>
                 </div>
             </nav>
         </div>
@@ -152,7 +152,7 @@
             <div class="admin-section">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
                     <h2>Car Inventory Management</h2>
-                    <button onclick="showAddCarForm()" style="padding: 12px 24px; background: #667eea; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600;">+ Add New Car</button>
+                    <button id="showAddCarBtn" style="padding: 12px 24px; background: #667eea; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600;">+ Add New Car</button>
                 </div>
                 
                 <!-- Add Car Form (hidden by default) -->
@@ -213,7 +213,7 @@
                         </div>
                         <div style="grid-column: 1 / -1; display: flex; gap: 10px;">
                             <button type="submit" style="flex: 1; padding: 12px; background: #667eea; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600;">Add Car</button>
-                            <button type="button" onclick="hideAddCarForm()" style="flex: 1; padding: 12px; background: #6c757d; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600;">Cancel</button>
+                            <button type="button" id="hideAddCarBtn" style="flex: 1; padding: 12px; background: #6c757d; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600;">Cancel</button>
                         </div>
                     </form>
                     <div id="addCarStatus" class="status-message"></div>
@@ -224,7 +224,7 @@
                     <div style="max-width: 800px; margin: 50px auto; background: white; padding: 30px; border-radius: 15px; box-shadow: 0 10px 40px rgba(0,0,0,0.3);">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
                             <h3 style="color: #667eea; margin: 0;">Edit Car Details</h3>
-                            <button onclick="hideEditCarForm()" style="background: #dc3545; color: white; border: none; border-radius: 50%; width: 35px; height: 35px; cursor: pointer; font-size: 20px;">×</button>
+                            <button id="hideEditCarBtn" style="background: #dc3545; color: white; border: none; border-radius: 50%; width: 35px; height: 35px; cursor: pointer; font-size: 20px;">×</button>
                         </div>
                         <form id="editCarForm" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
                             <input type="hidden" id="editCarId">
@@ -282,7 +282,7 @@
                             </div>
                             <div style="grid-column: 1 / -1; display: flex; gap: 10px;">
                                 <button type="submit" style="flex: 1; padding: 12px; background: #667eea; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600;">Save Changes</button>
-                                <button type="button" onclick="hideEditCarForm()" style="flex: 1; padding: 12px; background: #6c757d; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600;">Cancel</button>
+                                <button type="button" id="hideEditCarBtn2" style="flex: 1; padding: 12px; background: #6c757d; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600;">Cancel</button>
                             </div>
                         </form>
                         <div id="editCarStatus" class="status-message"></div>
@@ -413,8 +413,8 @@
                         <p><strong>Year:</strong> ${sanitize(car.year || '')} | <strong>Seats:</strong> ${sanitize(car.seats || '')} | <strong>Transmission:</strong> ${sanitize(car.transmission || '')}</p>
                         <p><strong>Availability:</strong> <span style="color: ${car.availability === 'available' ? 'green' : car.availability === 'limited' ? 'orange' : 'red'}">${sanitize(car.availability || '')}</span></p>
                         <div class="image-upload">
-                            <input type="file" id="images-${car.id}" multiple accept="image/*" onchange="handleImageSelect(${car.id})">
-                            <button onclick="uploadImages(${car.id})">Upload Images</button>
+                            <input type="file" id="images-${car.id}" multiple accept="image/*" data-car-id="${car.id}">
+                            <button class="upload-images-btn" data-car-id="${car.id}">Upload Images</button>
                             <div id="status-${car.id}" class="status-message"></div>
                             ${car.images && car.images.length > 0 ? `
                                 <div class="uploaded-images">
@@ -424,7 +424,7 @@
                         </div>
                     </div>
                     <div class="availability-controls">
-                        <button onclick="showEditCarForm(${car.id})" style="padding: 10px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; width: 100%; margin-bottom: 10px; font-weight: 600;">✏️ Edit Car Details</button>
+                        <button class="edit-car-btn" data-car-id="${car.id}" style="padding: 10px; background: #667eea; color: white; border: none; border-radius: 5px; cursor: pointer; width: 100%; margin-bottom: 10px; font-weight: 600;">✏️ Edit Car Details</button>
                         <label>
                             <strong>Available:</strong>
                             <input type="number" id="available-${car.id}" value="${car.available || 0}" min="0" max="${car.quantity || 0}">
@@ -433,8 +433,8 @@
                             <strong>Total Quantity:</strong>
                             <input type="number" id="quantity-${car.id}" value="${car.quantity || 0}" min="0">
                         </label>
-                        <button onclick="updateAvailability(${car.id})">Update Availability</button>
-                        <button onclick="deleteCar(${car.id})" style="margin-top: 10px; padding: 10px; background: #dc3545; color: white; border: none; border-radius: 5px; cursor: pointer; width: 100%;">🗑️ Delete Car</button>
+                        <button class="update-availability-btn" data-car-id="${car.id}">Update Availability</button>
+                        <button class="delete-car-btn" data-car-id="${car.id}" style="margin-top: 10px; padding: 10px; background: #dc3545; color: white; border: none; border-radius: 5px; cursor: pointer; width: 100%;">🗑️ Delete Car</button>
                     </div>
                 </div>
             `).join('');
@@ -446,6 +446,42 @@
             const input = document.getElementById(`images-${carId}`);
             selectedFiles[carId] = Array.from(input.files);
         }
+        
+        // Event delegation for dynamically generated buttons
+        document.addEventListener('click', (e) => {
+            // Upload Images button
+            if (e.target.classList.contains('upload-images-btn')) {
+                e.preventDefault();
+                const carId = parseInt(e.target.getAttribute('data-car-id'));
+                uploadImages(carId);
+            }
+            // Edit Car button
+            else if (e.target.classList.contains('edit-car-btn')) {
+                e.preventDefault();
+                const carId = parseInt(e.target.getAttribute('data-car-id'));
+                showEditCarForm(carId);
+            }
+            // Update Availability button
+            else if (e.target.classList.contains('update-availability-btn')) {
+                e.preventDefault();
+                const carId = parseInt(e.target.getAttribute('data-car-id'));
+                updateAvailability(carId);
+            }
+            // Delete Car button
+            else if (e.target.classList.contains('delete-car-btn')) {
+                e.preventDefault();
+                const carId = parseInt(e.target.getAttribute('data-car-id'));
+                deleteCar(carId);
+            }
+        });
+        
+        // Event delegation for file input changes
+        document.addEventListener('change', (e) => {
+            if (e.target.id && e.target.id.startsWith('images-') && e.target.hasAttribute('data-car-id')) {
+                const carId = parseInt(e.target.getAttribute('data-car-id'));
+                handleImageSelect(carId);
+            }
+        });
 
         async function uploadImages(carId) {
             if (!selectedFiles[carId] || selectedFiles[carId].length === 0) {
@@ -734,11 +770,62 @@
             }
         }
         
+        // Make functions globally accessible
+        window.uploadImages = uploadImages;
+        window.showEditCarForm = showEditCarForm;
+        window.updateAvailability = updateAvailability;
+        window.deleteCar = deleteCar;
+        window.showAddCarForm = showAddCarForm;
+        window.hideAddCarForm = hideAddCarForm;
+        window.hideEditCarForm = hideEditCarForm;
+        window.logout = logout;
+        
         // Load cars on page load
         document.addEventListener('DOMContentLoaded', async () => {
             const isLoggedIn = await checkAdminSession();
             if (isLoggedIn) {
                 loadCars();
+            }
+            
+            // Add event listeners for static buttons
+            const logoutLink = document.getElementById('logoutLink');
+            if (logoutLink) {
+                logoutLink.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    logout();
+                });
+            }
+            
+            const showAddCarBtn = document.getElementById('showAddCarBtn');
+            if (showAddCarBtn) {
+                showAddCarBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    showAddCarForm();
+                });
+            }
+            
+            const hideAddCarBtn = document.getElementById('hideAddCarBtn');
+            if (hideAddCarBtn) {
+                hideAddCarBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    hideAddCarForm();
+                });
+            }
+            
+            const hideEditCarBtn = document.getElementById('hideEditCarBtn');
+            if (hideEditCarBtn) {
+                hideEditCarBtn.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    hideEditCarForm();
+                });
+            }
+            
+            const hideEditCarBtn2 = document.getElementById('hideEditCarBtn2');
+            if (hideEditCarBtn2) {
+                hideEditCarBtn2.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    hideEditCarForm();
+                });
             }
         });
     </script>
