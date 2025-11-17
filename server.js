@@ -30,8 +30,9 @@ try {
 const app = express();
 
 // Trust proxy - Required for Railway and other reverse proxy setups
-// This allows Express to trust the X-Forwarded-For header from the proxy
-app.set('trust proxy', true);
+// Trust only the first proxy (Railway's load balancer)
+// This is more secure than trusting all proxies
+app.set('trust proxy', 1);
 
 // Security Headers
 app.use(helmet({
