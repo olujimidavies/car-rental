@@ -17,7 +17,14 @@ const { body, validationResult } = require('express-validator');
 const validator = require('validator');
 const bcrypt = require('bcrypt');
 const session = require('express-session');
-const FileStore = require('session-file-store')(session);
+
+// Try to load FileStore, but don't fail if it's not available
+let FileStore = null;
+try {
+    FileStore = require('session-file-store')(session);
+} catch (error) {
+    console.log('ℹ️  session-file-store not available, will use MemoryStore');
+}
 
 // Initialize app
 const app = express();
@@ -95,51 +102,9 @@ const sessionConfig = {
     }
 };
 
-// Try to use FileStore, fallback to MemoryStore if it fails (for Railway compatibility)
-// Use MemoryStore by default for Railway (more reliable)
-let useFileStore = false;
-
-// Only try FileStore if not on Railway (Railway's filesystem can be problematic)
-if (process.env.RAILWAY_ENVIRONMENT !== 'production' && process.env.NODE_ENV !== 'production') {
-    try {
-        const sessionsDir = path.join(__dirname, 'sessions');
-        if (!fs.existsSync(sessionsDir)) {
-            fs.mkdirSync(sessionsDir, { recursive: true });
-        }
-        
-        // Test if we can write to the directory
-        const testFile = path.join(sessionsDir, '.test');
-        try {
-            fs.writeFileSync(testFile, 'test');
-            fs.unlinkSync(testFile);
-            
-            // If write succeeds, use FileStore
-            try {
-                sessionConfig.store = new FileStore({
-                    path: sessionsDir,
-                    ttl: 86400, // 24 hours in seconds
-                    retries: 1,
-                    logFn: () => {} // Suppress FileStore logs
-                });
-                useFileStore = true;
-                console.log('✅ Using FileStore for sessions');
-            } catch (storeError) {
-                console.warn('⚠️  FileStore creation failed, using MemoryStore:', storeError.message);
-                useFileStore = false;
-            }
-        } catch (writeError) {
-            console.warn('⚠️  Cannot write to sessions directory, using MemoryStore:', writeError.message);
-            useFileStore = false;
-        }
-    } catch (error) {
-        console.warn('⚠️  FileStore initialization failed, using MemoryStore:', error.message);
-        useFileStore = false;
-    }
-} else {
-    // On Railway/production, use MemoryStore (more reliable)
-    console.log('ℹ️  Using MemoryStore for sessions (Railway/production mode)');
-    useFileStore = false;
-}
+// Use MemoryStore (FileStore is optional and not needed on Railway)
+// MemoryStore is fine for single-instance deployments
+console.log('ℹ️  Using MemoryStore for sessions (suitable for Railway)');
 
 app.use(session(sessionConfig));
 
