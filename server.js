@@ -151,7 +151,8 @@ const upload = multer({
 
 // Admin credentials (in production, store hashed password in database)
 const ADMIN_USERNAME = 'Admin';
-const ADMIN_PASSWORD_HASH = bcrypt.hashSync('Adekunle0987', 10); // Hash the password
+// Pre-computed bcrypt hash for 'Adekunle0987' (generated once, stored here)
+const ADMIN_PASSWORD_HASH = '$2b$10$e8cKX9qMT/6dEMghncAVx.f6qNeoO5HAcpe.hhqIhHUvF5.8NICNy';
 
 // Authentication middleware for admin endpoints
 const authenticateAdmin = (req, res, next) => {
@@ -175,12 +176,26 @@ app.post('/api/admin/login', [
         const { username, password } = req.body;
         
         // Check credentials
-        if (username === ADMIN_USERNAME && bcrypt.compareSync(password, ADMIN_PASSWORD_HASH)) {
+        const isUsernameValid = username === ADMIN_USERNAME;
+        const isPasswordValid = bcrypt.compareSync(password, ADMIN_PASSWORD_HASH);
+        
+        console.log('Login attempt:', { username, isUsernameValid, isPasswordValid });
+        
+        if (isUsernameValid && isPasswordValid) {
+            // Save session
             req.session.isAdmin = true;
             req.session.username = username;
-            return res.json({ 
-                message: 'Login successful',
-                username: username
+            
+            // Ensure session is saved before responding
+            req.session.save((err) => {
+                if (err) {
+                    console.error('Session save error:', err);
+                    return res.status(500).json({ error: 'Failed to save session' });
+                }
+                return res.json({ 
+                    message: 'Login successful',
+                    username: username
+                });
             });
         } else {
             return res.status(401).json({ error: 'Invalid username or password' });
