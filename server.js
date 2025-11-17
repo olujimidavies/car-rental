@@ -49,7 +49,7 @@ app.use(helmet({
 // CORS Configuration - Restrict to specific origins
 const allowedOrigins = process.env.ALLOWED_ORIGINS 
     ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
-    : ['http://localhost:3000', 'http://127.0.0.1:3000'];
+    : ['http://localhost:3000', 'http://127.0.0.1:3000', 'https://esdynamicrental.up.railway.app'];
 
 app.use(cors({
     origin: function (origin, callback) {
@@ -62,7 +62,13 @@ app.use(cors({
             // Log for debugging
             console.log('CORS blocked origin:', origin);
             console.log('Allowed origins:', allowedOrigins);
-            callback(new Error('Not allowed by CORS'));
+            // In production, be more permissive if ALLOWED_ORIGINS is not set
+            if (process.env.NODE_ENV === 'production' && !process.env.ALLOWED_ORIGINS) {
+                console.warn('⚠️  ALLOWED_ORIGINS not set in production, allowing origin:', origin);
+                callback(null, true);
+            } else {
+                callback(new Error('Not allowed by CORS'));
+            }
         }
     },
     credentials: true,
@@ -166,22 +172,43 @@ const authenticateAdmin = (req, res, next) => {
 app.post('/api/admin/login', [
     body('username').trim().notEmpty().withMessage('Username is required'),
     body('password').notEmpty().withMessage('Password is required')
-], async (req, res) => {
+], (req, res) => {
     try {
+        console.log('Login request received');
+        console.log('Request body:', { username: req.body.username, password: req.body.password ? '***' : 'missing' });
+        
         const errors = validationResult(req);
         if (!errors.isEmpty()) {
+            console.log('Validation errors:', errors.array());
             return res.status(400).json({ error: 'Validation failed', details: errors.array() });
         }
         
         const { username, password } = req.body;
         
+        if (!username || !password) {
+            return res.status(400).json({ error: 'Username and password are required' });
+        }
+        
         // Check credentials
         const isUsernameValid = username === ADMIN_USERNAME;
-        const isPasswordValid = bcrypt.compareSync(password, ADMIN_PASSWORD_HASH);
+        let isPasswordValid = false;
         
-        console.log('Login attempt:', { username, isUsernameValid, isPasswordValid });
+        try {
+            isPasswordValid = bcrypt.compareSync(password, ADMIN_PASSWORD_HASH);
+        } catch (bcryptError) {
+            console.error('Bcrypt comparison error:', bcryptError);
+            return res.status(500).json({ error: 'Password verification failed' });
+        }
+        
+        console.log('Login attempt:', { username, isUsernameValid, isPasswordValid, hasSession: !!req.session });
         
         if (isUsernameValid && isPasswordValid) {
+            // Check if session is available
+            if (!req.session) {
+                console.error('Session not available');
+                return res.status(500).json({ error: 'Session not available' });
+            }
+            
             // Save session
             req.session.isAdmin = true;
             req.session.username = username;
@@ -190,14 +217,17 @@ app.post('/api/admin/login', [
             req.session.save((err) => {
                 if (err) {
                     console.error('Session save error:', err);
+                    console.error('Session save error stack:', err.stack);
                     return res.status(500).json({ error: 'Failed to save session' });
                 }
+                console.log('Login successful for:', username);
                 return res.json({ 
                     message: 'Login successful',
                     username: username
                 });
             });
         } else {
+            console.log('Invalid credentials');
             return res.status(401).json({ error: 'Invalid username or password' });
         }
     } catch (error) {
