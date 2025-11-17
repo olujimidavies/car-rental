@@ -809,45 +809,44 @@ app.post('/api/bookings', [
         // Save inventory
         saveInventory(inventory);
         
-        // Send invoice emails
+        // Return response immediately (don't wait for emails)
+        res.json({
+            message: 'Reservation confirmed! An invoice has been sent to your email. Please complete payment at our location when you pick up the vehicle.',
+            booking
+        });
+        
+        // Send invoice emails asynchronously (don't block the response)
         const transporter = createTransporter();
         if (transporter) {
             const invoiceHTML = generateInvoiceHTML(booking);
             const emailSubject = `Booking Confirmation - ${booking.bookingId} - ES Dynamic Rentals`;
             
-            // Send to customer
-            try {
-                await transporter.sendMail({
-                    from: process.env.EMAIL_USER,
-                    to: email,
-                    subject: emailSubject,
-                    html: invoiceHTML
-                });
+            // Send to customer (async, don't await)
+            transporter.sendMail({
+                from: process.env.EMAIL_USER,
+                to: email,
+                subject: emailSubject,
+                html: invoiceHTML
+            }).then(() => {
                 console.log(`✅ Invoice sent to customer: ${email}`);
-            } catch (emailError) {
+            }).catch((emailError) => {
                 console.error('Error sending email to customer:', emailError);
-            }
+            });
             
-            // Send to esdynamicrental@gmail.com
-            try {
-                await transporter.sendMail({
-                    from: process.env.EMAIL_USER,
-                    to: 'esdynamicrental@gmail.com',
-                    subject: `New Booking: ${booking.bookingId} - ${booking.carName}`,
-                    html: invoiceHTML
-                });
+            // Send to esdynamicrental@gmail.com (async, don't await)
+            transporter.sendMail({
+                from: process.env.EMAIL_USER,
+                to: 'esdynamicrental@gmail.com',
+                subject: `New Booking: ${booking.bookingId} - ${booking.carName}`,
+                html: invoiceHTML
+            }).then(() => {
                 console.log(`✅ Invoice sent to esdynamicrental@gmail.com`);
-            } catch (emailError) {
+            }).catch((emailError) => {
                 console.error('Error sending email to esdynamicrental:', emailError);
-            }
+            });
         } else {
             console.warn('⚠️  Email not configured. Invoice emails not sent.');
         }
-        
-        res.json({
-            message: 'Reservation confirmed! An invoice has been sent to your email. Please complete payment at our location when you pick up the vehicle.',
-            booking
-        });
     } catch (error) {
         console.error('Booking error:', error);
         // Don't expose internal error details in production
