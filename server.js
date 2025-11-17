@@ -17,9 +17,14 @@ const { body, validationResult } = require('express-validator');
 const validator = require('validator');
 const bcrypt = require('bcrypt');
 const session = require('express-session');
+const FileStore = require('session-file-store')(session);
 
 // Initialize app
 const app = express();
+
+// Trust proxy - Required for Railway and other reverse proxy setups
+// This allows Express to trust the X-Forwarded-For header from the proxy
+app.set('trust proxy', true);
 
 // Security Headers
 app.use(helmet({
@@ -77,17 +82,66 @@ app.use('/api/bookings', bookingLimiter);
 app.use(bodyParser.json({ limit: '10mb' }));
 app.use(bodyParser.urlencoded({ extended: true, limit: '10mb' }));
 
-// Session Configuration
-app.use(session({
+// Session Configuration - Use file store with fallback to MemoryStore
+const sessionConfig = {
     secret: process.env.SESSION_SECRET || 'your-secret-key-change-in-production',
     resave: false,
     saveUninitialized: false,
     cookie: {
         secure: process.env.NODE_ENV === 'production', // HTTPS only in production
         httpOnly: true, // Prevents XSS attacks
-        maxAge: 24 * 60 * 60 * 1000 // 24 hours
+        maxAge: 24 * 60 * 60 * 1000, // 24 hours
+        sameSite: 'lax' // Helps with CORS and redirects
     }
-}));
+};
+
+// Try to use FileStore, fallback to MemoryStore if it fails (for Railway compatibility)
+// Use MemoryStore by default for Railway (more reliable)
+let useFileStore = false;
+
+// Only try FileStore if not on Railway (Railway's filesystem can be problematic)
+if (process.env.RAILWAY_ENVIRONMENT !== 'production' && process.env.NODE_ENV !== 'production') {
+    try {
+        const sessionsDir = path.join(__dirname, 'sessions');
+        if (!fs.existsSync(sessionsDir)) {
+            fs.mkdirSync(sessionsDir, { recursive: true });
+        }
+        
+        // Test if we can write to the directory
+        const testFile = path.join(sessionsDir, '.test');
+        try {
+            fs.writeFileSync(testFile, 'test');
+            fs.unlinkSync(testFile);
+            
+            // If write succeeds, use FileStore
+            try {
+                sessionConfig.store = new FileStore({
+                    path: sessionsDir,
+                    ttl: 86400, // 24 hours in seconds
+                    retries: 1,
+                    logFn: () => {} // Suppress FileStore logs
+                });
+                useFileStore = true;
+                console.log('✅ Using FileStore for sessions');
+            } catch (storeError) {
+                console.warn('⚠️  FileStore creation failed, using MemoryStore:', storeError.message);
+                useFileStore = false;
+            }
+        } catch (writeError) {
+            console.warn('⚠️  Cannot write to sessions directory, using MemoryStore:', writeError.message);
+            useFileStore = false;
+        }
+    } catch (error) {
+        console.warn('⚠️  FileStore initialization failed, using MemoryStore:', error.message);
+        useFileStore = false;
+    }
+} else {
+    // On Railway/production, use MemoryStore (more reliable)
+    console.log('ℹ️  Using MemoryStore for sessions (Railway/production mode)');
+    useFileStore = false;
+}
+
+app.use(session(sessionConfig));
 
 // Ensure images directory exists
 const imagesDir = path.join(__dirname, 'images');
@@ -167,7 +221,12 @@ app.post('/api/admin/login', [
         }
     } catch (error) {
         console.error('Login error:', error);
-        res.status(500).json({ error: 'Login failed' });
+        console.error('Error stack:', error.stack);
+        // Don't expose internal error details in production
+        const errorMessage = process.env.NODE_ENV === 'production' 
+            ? 'Login failed. Please try again or contact support.'
+            : error.message;
+        res.status(500).json({ error: errorMessage });
     }
 });
 
@@ -197,15 +256,23 @@ app.get('/api/admin/check', (req, res) => {
 const inventoryFile = path.join(__dirname, 'inventory.json');
 
 function initializeInventory() {
-    if (!fs.existsSync(inventoryFile)) {
-        const initialInventory = {
-            cars: [
-                { id: 1, name: "Toyota Camry", price: 60, quantity: 1, available: 1, images: [] },
-                { id: 2, name: "Toyota RAV4", price: 70, quantity: 3, available: 3, images: [] }
-            ],
-            bookings: []
-        };
-        fs.writeFileSync(inventoryFile, JSON.stringify(initialInventory, null, 2));
+    try {
+        if (!fs.existsSync(inventoryFile)) {
+            const initialInventory = {
+                cars: [
+                    { id: 1, name: "Toyota Camry", price: 60, quantity: 1, available: 1, images: [] },
+                    { id: 2, name: "Toyota RAV4", price: 70, quantity: 3, available: 3, images: [] }
+                ],
+                bookings: []
+            };
+            fs.writeFileSync(inventoryFile, JSON.stringify(initialInventory, null, 2));
+            console.log('✅ Created initial inventory.json');
+        } else {
+            console.log('✅ Inventory file exists');
+        }
+    } catch (error) {
+        console.error('❌ Error initializing inventory:', error);
+        // Don't crash - inventory will be created on first write
     }
 }
 
@@ -223,6 +290,11 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // Serve images folder
 app.use('/images', express.static(path.join(__dirname, 'images')));
+
+// Health check endpoint for Railway
+app.get('/health', (req, res) => {
+    res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+});
 
 // API info route (not root, to avoid interfering with static files)
 app.get('/api', (req, res) => {
@@ -637,7 +709,7 @@ function generateInvoiceHTML(booking) {
                 <p>Thank you for choosing ES Dynamic Rentals!</p>
                 <p>For any questions, contact us at:<br>
                 Phone: 918-204-8691<br>
-                Email: esdynamicrentals@gmail.com</p>
+                Email: esdynamicrental@gmail.com</p>
             </div>
         </div>
     </div>
@@ -745,17 +817,17 @@ app.post('/api/bookings', [
                 console.error('Error sending email to customer:', emailError);
             }
             
-            // Send to esdynamicrentals@gmail.com
+            // Send to esdynamicrental@gmail.com
             try {
                 await transporter.sendMail({
                     from: process.env.EMAIL_USER,
-                    to: 'esdynamicrentals@gmail.com',
+                    to: 'esdynamicrental@gmail.com',
                     subject: `New Booking: ${booking.bookingId} - ${booking.carName}`,
                     html: invoiceHTML
                 });
-                console.log(`✅ Invoice sent to esdynamicrentals@gmail.com`);
+                console.log(`✅ Invoice sent to esdynamicrental@gmail.com`);
             } catch (emailError) {
-                console.error('Error sending email to esdynamicrentals:', emailError);
+                console.error('Error sending email to esdynamicrental:', emailError);
             }
         } else {
             console.warn('⚠️  Email not configured. Invoice emails not sent.');
@@ -780,9 +852,47 @@ app.get('*', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Start server
+// Start server with error handling
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`✅ Server running on http://localhost:${PORT}`);
-    initializeInventory();
+
+// Handle uncaught errors to prevent crashes
+process.on('uncaughtException', (error) => {
+    console.error('❌ Uncaught Exception:', error);
+    console.error('Stack:', error.stack);
+    // Don't exit - let Railway handle it
 });
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+    // Don't exit - let Railway handle it
+});
+
+// Initialize inventory before starting server
+try {
+    initializeInventory();
+} catch (error) {
+    console.error('⚠️  Warning: Could not initialize inventory:', error.message);
+    // Continue anyway - inventory will be created on first use
+}
+
+// Start server
+try {
+    const server = app.listen(PORT, '0.0.0.0', () => {
+        console.log(`✅ Server running on port ${PORT}`);
+        console.log(`✅ Environment: ${process.env.NODE_ENV || 'development'}`);
+        console.log(`✅ Health check: http://0.0.0.0:${PORT}/health`);
+        console.log('✅ Server ready to accept connections');
+    });
+
+    // Handle server errors
+    server.on('error', (error) => {
+        console.error('❌ Server error:', error);
+        if (error.code === 'EADDRINUSE') {
+            console.error(`Port ${PORT} is already in use`);
+        }
+    });
+} catch (error) {
+    console.error('❌ Failed to start server:', error);
+    console.error('Stack:', error.stack);
+    process.exit(1);
+}
