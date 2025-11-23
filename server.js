@@ -863,26 +863,29 @@ app.post('/api/bookings', [
                 console.error('❌ Exception sending email to customer:', err.message);
             });
             
-            console.log(`📧 Preparing to send email to esdynamicrental@gmail.com`);
+            // Admin email - use environment variable or default to esdynamicrental@gmail.com
+            // When you verify a domain, you can send to any email address
+            const adminEmail = process.env.ADMIN_EMAIL || 'esdynamicrental@gmail.com';
+            console.log(`📧 Preparing to send email to ${adminEmail}`);
             
-            // Send to esdynamicrental@gmail.com (async, don't await)
+            // Send to admin email (async, don't await)
             resend.emails.send({
                 from: 'ES Dynamic Rentals <onboarding@resend.dev>', // Update with your verified domain later
-                to: 'esdynamicrental@gmail.com',
+                to: adminEmail,
                 subject: `New Booking: ${booking.bookingId} - ${booking.carName}`,
                 html: invoiceHTML
             }).then(({ data, error }) => {
                 if (error) {
-                    console.error('❌ Error sending email to esdynamicrental:', error.message);
+                    console.error(`❌ Error sending email to ${adminEmail}:`, error.message);
                     if (error.message) {
                         console.error('   Error details:', error);
                     }
                     return;
                 }
-                console.log(`✅ Invoice sent to esdynamicrental@gmail.com`);
+                console.log(`✅ Invoice sent to ${adminEmail}`);
                 console.log(`   Email ID: ${data?.id}`);
             }).catch((err) => {
-                console.error('❌ Exception sending email to esdynamicrental:', err.message);
+                console.error(`❌ Exception sending email to ${adminEmail}:`, err.message);
             });
         } else {
             console.warn('⚠️  Email not configured. Invoice emails not sent.');
