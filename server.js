@@ -630,6 +630,16 @@ function escapeHtml(text) {
     return text.toString().replace(/[&<>"']/g, m => map[m]);
 }
 
+// Map pickup location codes to full addresses
+function getPickupLocationAddress(locationCode) {
+    const locations = {
+        'main-office': '6666 South Sheridan Rd, Tulsa, Oklahoma 74133',
+        '1460 South Canton Avenue': '6666 South Sheridan Rd, Tulsa, Oklahoma 74133', // Legacy support
+        '6666 South Sheridan Rd': '6666 South Sheridan Rd, Tulsa, Oklahoma 74133'
+    };
+    return locations[locationCode] || '6666 South Sheridan Rd, Tulsa, Oklahoma 74133';
+}
+
 // Generate invoice HTML
 function generateInvoiceHTML(booking) {
     return `
@@ -692,7 +702,7 @@ function generateInvoiceHTML(booking) {
                 </div>
                 <div class="detail-row">
                     <span class="label">Pickup Location:</span>
-                    <span>1460 South Canton Avenue, Tulsa, Oklahoma 74137</span>
+                    <span>${getPickupLocationAddress(booking.pickupLocation)}</span>
                 </div>
                 ${booking.additionalInfo ? `
                 <div class="detail-row">
