@@ -10,7 +10,7 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
 const multer = require('multer');
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { body, validationResult } = require('express-validator');
@@ -268,15 +268,15 @@ const inventoryFile = path.join(__dirname, 'inventory.json');
 
 function initializeInventory() {
     try {
-        if (!fs.existsSync(inventoryFile)) {
-            const initialInventory = {
-                cars: [
-                    { id: 1, name: "Toyota Camry", price: 60, quantity: 1, available: 1, images: [] },
-                    { id: 2, name: "Toyota RAV4", price: 70, quantity: 3, available: 3, images: [] }
-                ],
-                bookings: []
-            };
-            fs.writeFileSync(inventoryFile, JSON.stringify(initialInventory, null, 2));
+    if (!fs.existsSync(inventoryFile)) {
+        const initialInventory = {
+            cars: [
+                { id: 1, name: "Toyota Camry", price: 60, quantity: 1, available: 1, images: [] },
+                { id: 2, name: "Toyota RAV4", price: 70, quantity: 3, available: 3, images: [] }
+            ],
+            bookings: []
+        };
+        fs.writeFileSync(inventoryFile, JSON.stringify(initialInventory, null, 2));
             console.log('✅ Created initial inventory.json');
         } else {
             console.log('✅ Inventory file exists');
@@ -319,19 +319,18 @@ app.get('/api', (req, res) => {
     });
 });
 
-// Email transporter
-const createTransporter = () => {
-    if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
-        console.warn('⚠️  Email credentials not configured. Email functionality will be disabled.');
+// Resend email client
+const createResendClient = () => {
+    if (!process.env.RESEND_API_KEY) {
+        console.warn('⚠️  Resend API key not configured. Email functionality will be disabled.');
+        console.warn('   RESEND_API_KEY:', process.env.RESEND_API_KEY ? 'Set' : 'NOT SET');
+        console.warn('   Get your API key from: https://resend.com/api-keys');
         return null;
     }
-    return nodemailer.createTransport({
-        service: 'gmail',
-        auth: { 
-            user: process.env.EMAIL_USER, 
-            pass: process.env.EMAIL_PASS 
-        }
-    });
+    
+    console.log('📧 Resend email client configured');
+    
+    return new Resend(process.env.RESEND_API_KEY);
 };
 
 // Demo email route
@@ -340,14 +339,24 @@ app.post('/api/send-demo-email', async (req, res) => {
     if (!email) return res.status(400).json({ error: 'Email is required' });
 
     try {
-        const transporter = createTransporter();
-        await transporter.sendMail({
-            from: process.env.EMAIL_USER,
+        const resend = createResendClient();
+        if (!resend) {
+            return res.status(500).json({ error: 'Email service not configured' });
+        }
+
+        const { data, error } = await resend.emails.send({
+            from: 'ES Dynamic Rentals <onboarding@resend.dev>', // Update with your verified domain later
             to: email,
             subject: 'Demo Email',
             html: `<h2>Hello ${name || 'there'}!</h2><p>This is a demo email.</p>`
         });
-        res.json({ message: 'Demo email sent!' });
+
+        if (error) {
+            console.error('Resend error:', error);
+            return res.status(500).json({ error: 'Failed to send email' });
+        }
+
+        res.json({ message: 'Demo email sent!', id: data?.id });
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Failed to send email' });
@@ -816,36 +825,59 @@ app.post('/api/bookings', [
         });
         
         // Send invoice emails asynchronously (don't block the response)
-        const transporter = createTransporter();
-        if (transporter) {
+        console.log('📧 Attempting to send booking emails...');
+        const resend = createResendClient();
+        if (resend) {
             const invoiceHTML = generateInvoiceHTML(booking);
             const emailSubject = `Booking Confirmation - ${booking.bookingId} - ES Dynamic Rentals`;
             
+            console.log(`📧 Preparing to send email to customer: ${email}`);
+            
             // Send to customer (async, don't await)
-            transporter.sendMail({
-                from: process.env.EMAIL_USER,
+            resend.emails.send({
+                from: 'ES Dynamic Rentals <onboarding@resend.dev>', // Update with your verified domain later
                 to: email,
                 subject: emailSubject,
                 html: invoiceHTML
-            }).then(() => {
+            }).then(({ data, error }) => {
+                if (error) {
+                    console.error('❌ Error sending email to customer:', error.message);
+                    if (error.message) {
+                        console.error('   Error details:', error);
+                    }
+                    return;
+                }
                 console.log(`✅ Invoice sent to customer: ${email}`);
-            }).catch((emailError) => {
-                console.error('Error sending email to customer:', emailError);
+                console.log(`   Email ID: ${data?.id}`);
+            }).catch((err) => {
+                console.error('❌ Exception sending email to customer:', err.message);
             });
             
+            console.log(`📧 Preparing to send email to esdynamicrental@gmail.com`);
+            
             // Send to esdynamicrental@gmail.com (async, don't await)
-            transporter.sendMail({
-                from: process.env.EMAIL_USER,
+            resend.emails.send({
+                from: 'ES Dynamic Rentals <onboarding@resend.dev>', // Update with your verified domain later
                 to: 'esdynamicrental@gmail.com',
                 subject: `New Booking: ${booking.bookingId} - ${booking.carName}`,
                 html: invoiceHTML
-            }).then(() => {
+            }).then(({ data, error }) => {
+                if (error) {
+                    console.error('❌ Error sending email to esdynamicrental:', error.message);
+                    if (error.message) {
+                        console.error('   Error details:', error);
+                    }
+                    return;
+                }
                 console.log(`✅ Invoice sent to esdynamicrental@gmail.com`);
-            }).catch((emailError) => {
-                console.error('Error sending email to esdynamicrental:', emailError);
+                console.log(`   Email ID: ${data?.id}`);
+            }).catch((err) => {
+                console.error('❌ Exception sending email to esdynamicrental:', err.message);
             });
         } else {
             console.warn('⚠️  Email not configured. Invoice emails not sent.');
+            console.warn('   Please set RESEND_API_KEY in Railway environment variables.');
+            console.warn('   Get your API key from: https://resend.com/api-keys');
         }
     } catch (error) {
         console.error('Booking error:', error);
