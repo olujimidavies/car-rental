@@ -843,30 +843,60 @@ app.post('/api/bookings', [
             
             console.log(`📧 Preparing to send email to customer: ${email}`);
             
+            // Admin email - use environment variable or default to esdynamicrental@gmail.com
+            const adminEmail = process.env.ADMIN_EMAIL || 'esdynamicrental@gmail.com';
+            
             // Send to customer (async, don't await)
+            // Note: With onboarding@resend.dev, we can only send to the Resend account email
+            // So we'll send customer emails to admin, who can forward them
+            // OR verify a domain to send to any email address
             resend.emails.send({
                 from: 'ES Dynamic Rentals <onboarding@resend.dev>', // Update with your verified domain later
-                to: email,
-                subject: emailSubject,
-                html: invoiceHTML
+                to: email === adminEmail ? email : adminEmail, // Send to admin if different email
+                subject: email === adminEmail ? emailSubject : `[FORWARD TO: ${email}] ${emailSubject}`,
+                html: email === adminEmail ? invoiceHTML : `
+                    <div style="background: #fff3cd; border: 2px solid #ffc107; padding: 15px; margin-bottom: 20px; border-radius: 8px;">
+                        <p style="margin: 0; color: #856404; font-weight: 600;">
+                            ⚠️ Please forward this email to: <strong>${escapeHtml(email)}</strong>
+                        </p>
+                        <p style="margin: 8px 0 0 0; color: #856404; font-size: 0.9em;">
+                            This booking confirmation needs to be forwarded to the customer. 
+                            To send directly to customers, verify a domain at <a href="https://resend.com/domains">resend.com/domains</a>.
+                        </p>
+                    </div>
+                    ${invoiceHTML}
+                `
             }).then(({ data, error }) => {
                 if (error) {
                     console.error('❌ Error sending email to customer:', error.message);
                     if (error.message) {
                         console.error('   Error details:', error);
                     }
+                    // Try to send to admin as fallback
+                    if (email !== adminEmail) {
+                        console.log(`📧 Attempting to send customer email copy to admin: ${adminEmail}`);
+                        resend.emails.send({
+                            from: 'ES Dynamic Rentals <onboarding@resend.dev>',
+                            to: adminEmail,
+                            subject: `[CUSTOMER EMAIL FAILED] Booking for ${email} - ${booking.bookingId}`,
+                            html: `<p>Failed to send booking confirmation to customer: ${escapeHtml(email)}</p><p>Error: ${escapeHtml(error.message)}</p>${invoiceHTML}`
+                        }).catch(() => {});
+                    }
                     return;
                 }
-                console.log(`✅ Invoice sent to customer: ${email}`);
+                if (email === adminEmail) {
+                    console.log(`✅ Invoice sent to customer: ${email}`);
+                } else {
+                    console.log(`✅ Invoice sent to admin for forwarding to customer: ${email}`);
+                    console.warn(`   ⚠️  Customer email (${email}) will receive email via admin forwarding.`);
+                    console.warn(`   💡 To send directly to customers, verify a domain at https://resend.com/domains`);
+                }
                 console.log(`   Email ID: ${data?.id}`);
             }).catch((err) => {
                 console.error('❌ Exception sending email to customer:', err.message);
             });
             
-            // Admin email - use environment variable or default to esdynamicrental@gmail.com
-            // When you verify a domain, you can send to any email address
-            const adminEmail = process.env.ADMIN_EMAIL || 'esdynamicrental@gmail.com';
-            console.log(`📧 Preparing to send email to ${adminEmail}`);
+            console.log(`📧 Preparing to send admin notification to ${adminEmail}`);
             
             // Send to admin email (async, don't await)
             resend.emails.send({
